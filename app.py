@@ -349,7 +349,7 @@ def render_banner(consensus: dict, stream_name: str):
 
 # ── Per-window expander ───────────────────────────────────────────────────────
 
-def render_window(r: dict, idx: int):
+def render_window(r: dict, idx: int, stream_key: str = 'stream'):
     label      = r.get("label", f"Window {idx+1}")
     live       = r.get("live_signal") or {}
     sig        = live.get("signal", "—")
@@ -393,6 +393,7 @@ def render_window(r: dict, idx: int):
 
             if proba:
                 st.plotly_chart(proba_bar_chart(proba), use_container_width=True,
+                                key=f"proba_{stream_key}_{idx}",
                                 config={"displayModeBar": False})
 
             st.markdown('<div class="sec">Backtest — test set performance</div>', unsafe_allow_html=True)
@@ -414,6 +415,7 @@ def render_window(r: dict, idx: int):
                 fig = vsn_bar_chart(vsn_top)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True,
+                                    key=f"vsn_{stream_key}_{idx}",
                                     config={"displayModeBar": False})
                 st.markdown("""<div style="font-size:0.80rem;color:var(--muted);
                                 font-family:var(--mono);display:flex;gap:12px;flex-wrap:wrap;">
@@ -503,6 +505,7 @@ def render_stream(stream_data: dict, stream_name: str):
         col_chart, col_space = st.columns([2, 3])
         with col_chart:
             st.plotly_chart(dist_bar_chart(live_sigs_clean), use_container_width=True,
+                            key=f"dist_{stream_name.replace(' ', '_')}",
                             config={"displayModeBar": False})
 
     # Per-window breakdown
@@ -516,7 +519,7 @@ def render_stream(stream_data: dict, stream_name: str):
     st.markdown("<br>", unsafe_allow_html=True)
 
     for i, w in enumerate(windows):
-        render_window(w, i)
+        render_window(w, i, stream_key=stream_name.replace(' ', '_'))
 
 
 # ── History tab ───────────────────────────────────────────────────────────────
@@ -554,7 +557,7 @@ def render_history(hist_df: pd.DataFrame):
                                   xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
                                   yaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
                                   legend=dict(font=dict(family="Space Mono", size=9)))
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(fig, use_container_width=True, key=f"hist_{prefix}", config={"displayModeBar": False})
 
     st.markdown('<div class="sec">Full History Table</div>', unsafe_allow_html=True)
     st.dataframe(
