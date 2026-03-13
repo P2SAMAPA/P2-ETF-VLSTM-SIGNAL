@@ -63,6 +63,7 @@ st.markdown("""
 
   html, body, [class*="css"] {
     font-family: var(--sans) !important;
+    font-size: 16px !important;
     background-color: var(--bg) !important;
     color: var(--text) !important;
   }
@@ -78,7 +79,7 @@ st.markdown("""
   }
   .stTabs [data-baseweb="tab"] {
     font-family: var(--mono) !important;
-    font-size: 0.72rem !important;
+    font-size: 0.88rem !important;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--muted) !important;
@@ -94,7 +95,7 @@ st.markdown("""
   /* Expanders */
   .streamlit-expanderHeader {
     font-family: var(--mono) !important;
-    font-size: 0.70rem !important;
+    font-size: 0.90rem !important;
     letter-spacing: 0.05em !important;
     color: var(--muted) !important;
     background: var(--bg2) !important;
@@ -117,14 +118,14 @@ st.markdown("""
   }
   [data-testid="metric-container"] label {
     font-family: var(--mono) !important;
-    font-size: 0.62rem !important;
+    font-size: 0.80rem !important;
     letter-spacing: 0.1em !important;
     color: var(--muted) !important;
     text-transform: uppercase;
   }
   [data-testid="stMetricValue"] {
     font-family: var(--mono) !important;
-    font-size: 1.3rem !important;
+    font-size: 1.6rem !important;
     color: var(--text) !important;
   }
 
@@ -142,9 +143,9 @@ st.markdown("""
   .banner-split    { background: #fff8e8; border-color: #c97d0044; }
   .banner-none     { background: var(--bg2); border-color: var(--border); }
 
-  .banner-label  { font-family:var(--mono); font-size:0.62rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); margin-bottom:0.4rem; }
-  .banner-signal { font-family:var(--mono); font-size:2.6rem; font-weight:700; letter-spacing:0.04em; line-height:1; }
-  .banner-meta   { font-family:var(--sans); font-size:0.85rem; color:var(--muted); margin-top:0.5rem; }
+  .banner-label  { font-family:var(--mono); font-size:0.82rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); margin-bottom:0.4rem; }
+  .banner-signal { font-family:var(--mono); font-size:3.2rem; font-weight:700; letter-spacing:0.04em; line-height:1; }
+  .banner-meta   { font-family:var(--sans); font-size:1.0rem; color:var(--muted); margin-top:0.5rem; }
 
   .sig-strong   { color: #0077cc; }
   .sig-majority { color: #00965a; }
@@ -156,12 +157,12 @@ st.markdown("""
   @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
 
   /* Section labels */
-  .sec { font-family:var(--mono); font-size:0.62rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--border); padding-bottom:0.35rem; margin:1.2rem 0 0.8rem; }
+  .sec { font-family:var(--mono); font-size:0.82rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--border); padding-bottom:0.35rem; margin:1.2rem 0 0.8rem; }
 
   h1,h2,h3 { font-family:var(--mono) !important; }
-  h1 { font-size:1.1rem !important; letter-spacing:0.08em !important; color:var(--text) !important; }
-  h2 { font-size:0.82rem !important; letter-spacing:0.1em !important; color:var(--muted) !important; text-transform:uppercase !important; }
-  h3 { font-size:0.72rem !important; letter-spacing:0.08em !important; color:var(--muted) !important; }
+  h1 { font-size:1.4rem !important; letter-spacing:0.08em !important; color:var(--text) !important; }
+  h2 { font-size:1.05rem !important; letter-spacing:0.1em !important; color:var(--muted) !important; text-transform:uppercase !important; }
+  h3 { font-size:0.92rem !important; letter-spacing:0.08em !important; color:var(--muted) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -271,29 +272,28 @@ def vsn_bar_chart(vsn_top: list, height=None) -> go.Figure | None:
 
 
 def dist_bar_chart(live_sigs: list, height=190) -> go.Figure:
-    cnt = Counter(live_sigs)
-    etfs = sorted(cnt.keys(), key=lambda e: -cnt[e])
-    vals = [cnt[e] for e in etfs]
+    # Filter out any falsy values before counting
+    clean = [s for s in (live_sigs or []) if s]
+    cnt   = Counter(clean)
+    etfs  = sorted(cnt.keys(), key=lambda e: -cnt[e])
+    vals  = [cnt[e] for e in etfs]
     colors = [etf_color(e) for e in etfs]
 
-    # FIX: guard against empty vals
-    if not vals:
-        fig = go.Figure()
-        fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
-                          title="Live Signal Distribution Across Windows",
-                          title_font=dict(family="Space Mono", size=10, color="#5a6a80"))
-        return fig
+    # Always-safe y range — never call max() on an empty list
+    y_max = (max(vals) * 1.3) if vals else 1.0
 
-    fig = go.Figure(go.Bar(
-        x=etfs, y=vals,
-        marker_color=colors, marker_line_width=0,
-        text=vals, textposition="outside",
-        textfont=dict(family="Space Mono", size=10, color="#5a6a80"),
-    ))
+    fig = go.Figure()
+    if vals:
+        fig.add_trace(go.Bar(
+            x=etfs, y=vals,
+            marker_color=colors, marker_line_width=0,
+            text=vals, textposition="outside",
+            textfont=dict(family="Space Mono", size=12, color="#5a6a80"),
+        ))
     fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
                       title="Live Signal Distribution Across Windows",
-                      title_font=dict(family="Space Mono", size=10, color="#5a6a80"),
-                      yaxis=dict(visible=False, range=[0, max(vals) * 1.3]),
+                      title_font=dict(family="Space Mono", size=12, color="#5a6a80"),
+                      yaxis=dict(visible=False, range=[0, y_max]),
                       margin=dict(l=6, r=6, t=34, b=6))
     return fig
 
@@ -337,8 +337,8 @@ def render_banner(consensus: dict, stream_name: str):
         pct = count / total * 100 if total else 0
         c = etf_color(etf)
         cols[i].markdown(f"""<div class="card-sm" style="border-color:{c}55;">
-          <div style="font-family:var(--mono);font-size:1.05rem;color:{c};font-weight:700;">{etf}</div>
-          <div style="font-size:0.72rem;color:var(--muted);">{count} votes &nbsp; {pct:.0f}%</div>
+          <div style="font-family:var(--mono);font-size:1.3rem;color:{c};font-weight:700;">{etf}</div>
+          <div style="font-size:0.90rem;color:var(--muted);">{count} votes &nbsp; {pct:.0f}%</div>
           <div style="margin-top:5px;height:3px;background:#d1d9e6;border-radius:2px;">
             <div style="width:{pct:.0f}%;height:3px;background:{c};border-radius:2px;"></div>
           </div>
@@ -380,9 +380,9 @@ def render_window(r: dict, idx: int):
             st.markdown('<div class="sec">Live Signal — next trading day</div>', unsafe_allow_html=True)
             c1, c2, c3, c4 = st.columns(4)
             c1.markdown(f"""
-              <div style="font-family:var(--mono);font-size:2.2rem;font-weight:700;
+              <div style="font-family:var(--mono);font-size:2.8rem;font-weight:700;
                           color:{sig_color};line-height:1.1;">{sig}</div>
-              <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);
+              <div style="font-size:0.82rem;color:var(--muted);font-family:var(--mono);
                           letter-spacing:0.1em;margin-top:3px;">TOP SIGNAL</div>
             """, unsafe_allow_html=True)
             c2.metric("Confidence",  f"{conf*100:.1f}%")
@@ -400,7 +400,7 @@ def render_window(r: dict, idx: int):
             m3.metric("Max DD",      fmt_pct(max_dd))
             m4.metric("Hit Rate",    f"{hit_rate*100:.1f}%" if hit_rate is not None else "—")
 
-            st.markdown(f"""<div style="font-size:0.68rem;color:var(--muted);
+            st.markdown(f"""<div style="font-size:0.85rem;color:var(--muted);
                             font-family:var(--mono);margin-top:0.5rem;">
               {n_days} test days &nbsp;·&nbsp; lookback {lookback}d &nbsp;·&nbsp;
               val_sharpe {val_sharpe:.3f} &nbsp;·&nbsp; {epochs_run} epochs
@@ -413,7 +413,7 @@ def render_window(r: dict, idx: int):
                 if fig:
                     st.plotly_chart(fig, use_container_width=True,
                                     config={"displayModeBar": False})
-                st.markdown("""<div style="font-size:0.62rem;color:var(--muted);
+                st.markdown("""<div style="font-size:0.80rem;color:var(--muted);
                                 font-family:var(--mono);display:flex;gap:12px;flex-wrap:wrap;">
                   <span style="color:#0077cc;">■ Returns</span>
                   <span style="color:#5b3fd4;">■ MACD</span>
@@ -506,7 +506,7 @@ def render_stream(stream_data: dict, stream_name: str):
     # Per-window breakdown
     st.markdown('<div class="sec">Per-Window Breakdown</div>', unsafe_allow_html=True)
     st.markdown(
-        f"<span style='font-size:0.78rem;color:var(--muted);'>"
+        f"<span style='font-size:0.95rem;color:var(--muted);'>"
         f"{len(windows)} windows — each trained on its own date range, "
         f"each predicts tomorrow independently</span>",
         unsafe_allow_html=True,
@@ -568,7 +568,7 @@ def main():
                   letter-spacing:0.06em;color:var(--text);">
         P2 · ETF · VLSTM · SIGNAL
       </div>
-      <div style="font-family:var(--mono);font-size:0.62rem;letter-spacing:0.12em;
+      <div style="font-family:var(--mono);font-size:0.80rem;letter-spacing:0.12em;
                   color:var(--muted);text-transform:uppercase;">
         VSN + LSTM &nbsp;·&nbsp; Expanding &amp; Shrinking Windows &nbsp;·&nbsp; Display Only
       </div>
@@ -589,7 +589,7 @@ def main():
                     if status_ok else "No data — check HF_TOKEN environment variable")
 
     st.markdown(f"""
-    <div style="font-family:var(--mono);font-size:0.66rem;color:{status_color};
+    <div style="font-family:var(--mono);font-size:0.82rem;color:{status_color};
                 margin-bottom:1.5rem;letter-spacing:0.08em;">
       <span class="dot-live" style="background:{status_color};"></span>{status_msg}
     </div>""", unsafe_allow_html=True)
