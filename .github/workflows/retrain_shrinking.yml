@@ -4,10 +4,13 @@ on:
   schedule:
     # 21:30 UTC Sunday = before Monday market open
     # Runs in parallel with retrain_expanding.yml on separate runner
-    # Combined wall-clock time: ~3.7 hrs instead of ~7.4 hrs
     - cron: '30 21 * * 0'
   workflow_dispatch:
     inputs:
+      force:
+        description: 'Force retrain even if already ran today (true/false)'
+        required: false
+        default: 'false'
       benchmark:
         description: 'Run benchmark timing only (true/false)'
         required: false
@@ -20,7 +23,7 @@ on:
 jobs:
   train_shrinking:
     runs-on: ubuntu-latest
-    timeout-minutes: 360       # 6 hour hard cap per stream
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repo
@@ -35,7 +38,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check if already ran today
+        if: ${{ github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python check_run_date.py --stream shrinking
+          if [ $? -eq 0 ]; then
+            echo "SKIP=true" >> $GITHUB_ENV
+          else
+            echo "SKIP=false" >> $GITHUB_ENV
+          fi
+
       - name: Train shrinking stream
+        if: ${{ env.SKIP != 'true' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -49,4 +65,9 @@ jobs:
 
       - name: Report completion
         if: always()
-        run: echo "✅ Shrinking stream finished at $(date -u)"
+        run: |
+          if [ "${{ env.SKIP }}" = "true" ]; then
+            echo "⏭️  Skipped — already ran today"
+          else
+            echo "✅ Shrinking stream finished at $(date -u)"
+          fi
