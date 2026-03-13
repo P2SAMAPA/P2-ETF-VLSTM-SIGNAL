@@ -37,7 +37,7 @@ from vlstm    import (train_vlstm, predict, build_sequences,
 from backtest import (execute_strategy, generate_live_signal,
                       summarise_window_result, stream_consensus)
 from conviction import compute_conviction
-from writer   import write_outputs
+from writer   import write_stream
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -431,6 +431,9 @@ def run_benchmark(df_raw, epochs: int = EPOCHS):
 
 def main():
     parser = argparse.ArgumentParser(description="P2-ETF-VLSTM-SIGNAL trainer")
+    parser.add_argument("--stream", type=str, default="both",
+                        choices=["expanding", "shrinking", "both"],
+                        help="Which stream to train (default: both)")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run benchmark timing only (no HF write)")
     parser.add_argument("--epochs", type=int, default=EPOCHS,
@@ -452,8 +455,13 @@ def main():
 
     if args.benchmark:
         run_benchmark(df_raw, epochs=args.epochs)
+    elif args.stream == "both":
+        # Sequential fallback — used if running locally or with single yml
+        run_stream("expanding", df_raw, hf_token, epochs=args.epochs)
+        run_stream("shrinking", df_raw, hf_token, epochs=args.epochs)
     else:
-        run_full_training(df_raw, hf_token, epochs=args.epochs)
+        # Single stream — called by retrain_expanding.yml / retrain_shrinking.yml
+        run_stream(args.stream, df_raw, hf_token, epochs=args.epochs)
 
 
 if __name__ == "__main__":
