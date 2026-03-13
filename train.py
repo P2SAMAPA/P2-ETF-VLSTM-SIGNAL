@@ -201,16 +201,28 @@ def train_one_window(
     return best
 
 
-# ── Full training run ─────────────────────────────────────────────────────────
+# ── Stream training run ───────────────────────────────────────────────────────
 
-def run_full_training(df_raw, hf_token: str, epochs: int = EPOCHS):
-    import pandas as pd
+def run_stream(
+    stream:   str,          # "expanding" or "shrinking"
+    df_raw,
+    hf_token: str,
+    epochs:   int = EPOCHS,
+):
+    """
+    Train all windows for one stream only and write its results to HF.
+    Called by retrain_expanding.yml and retrain_shrinking.yml in parallel.
+    Writes expanding_latest.json or shrinking_latest.json independently.
+    """
+    assert stream in ("expanding", "shrinking")
+    icon = "📈" if stream == "expanding" else "📉"
 
     print("=" * 60)
-    print("P2-ETF-VLSTM-SIGNAL  |  Full Training Run")
+    print(f"P2-ETF-VLSTM-SIGNAL  |  {stream.upper()} STREAM")
     print("=" * 60)
 
     data_through = str(df_raw.index[-1].date())
+    data_end     = df_raw.index.year.max()
     print(f"Data through: {data_through}")
     print(f"Dataset: {len(df_raw)} rows  "
           f"{df_raw.index[0].date()} → {df_raw.index[-1].date()}")
@@ -218,90 +230,65 @@ def run_full_training(df_raw, hf_token: str, epochs: int = EPOCHS):
     # Pre-build full-dataset features for live signal generation
     print("\n📐 Pre-building full-dataset features for live signal...")
     try:
-        full_A = build_features(df_raw, option="A", start_year=2008)
-        X_full_A   = full_A["X"]
-        fn_A       = full_A["feature_names"]
+        full_A   = build_features(df_raw, option="A", start_year=2008)
+        X_full_A = full_A["X"]
+        fn_A     = full_A["feature_names"]
     except Exception as e:
         print(f"  ⚠️  Option A full features failed: {e}")
         X_full_A, fn_A = None, []
 
     try:
-        full_B = build_features(df_raw, option="B", start_year=2008)
-        X_full_B   = full_B["X"]
-        fn_B       = full_B["feature_names"]
+        full_B   = build_features(df_raw, option="B", start_year=2008)
+        X_full_B = full_B["X"]
+        fn_B     = full_B["feature_names"]
     except Exception as e:
         print(f"  ⚠️  Option B full features failed: {e}")
         X_full_B, fn_B = None, []
 
-    # Generate all windows
-    data_end       = df_raw.index.year.max()
-    exp_windows    = expanding_windows(
-        first_train_end=2011, data_end_year=data_end, df_raw=df_raw, step=3
-    )
-    shr_windows    = shrinking_windows(
-        data_end_year=data_end, df_raw=df_raw, step=3
-    )
+    # Generate windows for this stream only
+    if stream == "expanding":
+        windows = expanding_windows(
+            first_train_end=2011, data_end_year=data_end, df_raw=df_raw, step=3
+        )
+    else:
+        windows = shrinking_windows(
+            data_end_year=data_end, df_raw=df_raw, step=3
+        )
 
-    total_windows  = len(exp_windows) + len(shr_windows)
-    print(f"\n🗂️  Windows: {len(exp_windows)} expanding + "
-          f"{len(shr_windows)} shrinking = {total_windows} total")
+    print(f"\n🗂️  {icon} {len(windows)} {stream} windows")
     print(f"🔧  Models per window: {len(OPTIONS) * len(LOSS_MODES)} "
           f"(A_ce, A_sharpe, B_ce, B_sharpe)")
-    print(f"📊  Total training runs: {total_windows * len(OPTIONS) * len(LOSS_MODES)}")
+    print(f"📊  Total training runs: {len(windows) * len(OPTIONS) * len(LOSS_MODES)}")
 
     t_global = time.time()
+    results  = []
 
-    # ── Train expanding windows ───────────────────────────────────────────────
-    print(f"\n{'='*40}")
-    print("📈 EXPANDING STREAM")
-    print(f"{'='*40}")
-    exp_results = []
-    for i, window in enumerate(exp_windows):
-        print(f"\n[{i+1}/{len(exp_windows)}] Window: {window['label']}")
+    for i, window in enumerate(windows):
+        print(f"\n[{i+1}/{len(windows)}] Window: {window['label']}")
         result = train_one_window(
             window, df_raw, X_full_A, X_full_B, fn_A, fn_B, epochs=epochs
         )
         if result:
-            exp_results.append(result)
-        else:
-            print(f"  ⚠️  No valid result for {window['label']}")
-
-    # ── Train shrinking windows ───────────────────────────────────────────────
-    print(f"\n{'='*40}")
-    print("📉 SHRINKING STREAM")
-    print(f"{'='*40}")
-    shr_results = []
-    for i, window in enumerate(shr_windows):
-        print(f"\n[{i+1}/{len(shr_windows)}] Window: {window['label']}")
-        result = train_one_window(
-            window, df_raw, X_full_A, X_full_B, fn_A, fn_B, epochs=epochs
-        )
-        if result:
-            shr_results.append(result)
+            results.append(result)
         else:
             print(f"  ⚠️  No valid result for {window['label']}")
 
     total_elapsed = time.time() - t_global
-    print(f"\n⏱️  Total training time: {total_elapsed/60:.1f} minutes")
+    print(f"\n⏱️  {stream.capitalize()} training time: {total_elapsed/60:.1f} minutes")
 
-    # ── Compute consensus ─────────────────────────────────────────────────────
-    exp_consensus = stream_consensus(exp_results, TARGET_ETFS)
-    shr_consensus = stream_consensus(shr_results, TARGET_ETFS)
+    # Compute consensus
+    consensus = stream_consensus(results, TARGET_ETFS)
+    print(f"\n📊 {stream.capitalize()} consensus: {consensus.get('signal')} "
+          f"({consensus.get('strength')})")
 
-    print(f"\n📊 Expanding consensus:  {exp_consensus.get('signal')} "
-          f"({exp_consensus.get('strength')})")
-    print(f"📊 Shrinking consensus:  {shr_consensus.get('signal')} "
-          f"({shr_consensus.get('strength')})")
-
-    # ── Write to HF ───────────────────────────────────────────────────────────
-    print("\n📤 Writing outputs to HuggingFace...")
-    write_outputs(
-        expanding_results    = exp_results,
-        shrinking_results    = shr_results,
-        expanding_consensus  = exp_consensus,
-        shrinking_consensus  = shr_consensus,
-        data_through         = data_through,
-        hf_token             = hf_token,
+    # Write to HF
+    print(f"\n📤 Writing {stream}_latest.json to HuggingFace...")
+    write_stream(
+        stream       = stream,
+        results      = results,
+        consensus    = consensus,
+        data_through = data_through,
+        hf_token     = hf_token,
     )
 
     print("\n✅ Done.")
