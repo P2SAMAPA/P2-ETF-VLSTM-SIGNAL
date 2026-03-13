@@ -3,7 +3,6 @@ name: Retrain — Shrinking Stream
 on:
   schedule:
     # 21:30 UTC Sunday = before Monday market open
-    # Runs in parallel with retrain_expanding.yml on separate runner
     - cron: '30 21 * * 0'
   workflow_dispatch:
     inputs:
@@ -43,8 +42,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python check_run_date.py --stream shrinking
-          if [ $? -eq 0 ]; then
+          RESULT=$(python check_run_date.py --stream shrinking)
+          echo "Date check result: $RESULT"
+          if [ "$RESULT" = "ALREADY_RAN_TODAY" ]; then
             echo "SKIP=true" >> $GITHUB_ENV
           else
             echo "SKIP=false" >> $GITHUB_ENV
