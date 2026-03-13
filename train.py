@@ -236,10 +236,10 @@ def run_full_training(df_raw, hf_token: str, epochs: int = EPOCHS):
     # Generate all windows
     data_end       = df_raw.index.year.max()
     exp_windows    = expanding_windows(
-        first_train_end=2010, data_end_year=data_end, df_raw=df_raw
+        first_train_end=2011, data_end_year=data_end, df_raw=df_raw, step=3
     )
     shr_windows    = shrinking_windows(
-        last_train_start=data_end - 1, data_end_year=data_end, df_raw=df_raw
+        data_end_year=data_end, df_raw=df_raw, step=3
     )
 
     total_windows  = len(exp_windows) + len(shr_windows)
