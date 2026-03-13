@@ -1,9 +1,11 @@
-name: Daily VLSTM Retrain
+name: Weekly VLSTM Retrain
 
 on:
   schedule:
-    # 21:30 UTC = 4:30 PM EST (after US market close)
-    - cron: '30 21 * * 1-5'
+    # 21:30 UTC Sunday = before Monday market open
+    # 3-year windows x 12 windows x 4 models ~ 410 min per run
+    # Weekly cadence keeps usage within GitHub Actions free tier (~1,640 min/month)
+    - cron: '30 21 * * 0'
   workflow_dispatch:
     inputs:
       benchmark:
