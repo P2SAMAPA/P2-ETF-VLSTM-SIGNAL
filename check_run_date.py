@@ -2,10 +2,12 @@
 check_run_date.py
 P2-ETF-VLSTM-SIGNAL
 
-Called at the start of each retrain workflow.
-Reads the stream's existing output file from HF and checks if it
-was already run today (EST). Exits with code 0 if already run
-(workflow should skip), code 1 if not yet run (workflow should proceed).
+Checks if this stream already ran today (EST).
+Always exits 0 — result communicated via stdout for the yml to capture.
+
+Prints either:
+  ALREADY_RAN_TODAY
+  PROCEED
 
 Usage:
   python check_run_date.py --stream expanding
@@ -26,8 +28,8 @@ def main():
 
     hf_token = os.getenv("HF_TOKEN", "")
     if not hf_token:
-        print("⚠️  No HF_TOKEN — cannot check run date, proceeding.")
-        sys.exit(1)   # proceed
+        print("PROCEED")
+        return
 
     est_now  = datetime.now(timezone.utc) - timedelta(hours=5)
     today    = est_now.strftime("%Y-%m-%d")
@@ -50,16 +52,13 @@ def main():
         last_run = data.get("run_date", "")
 
         if last_run == today:
-            print(f"⏭️  {args.stream} stream already ran today ({today}). Skipping.")
-            sys.exit(0)   # already ran — workflow will skip
+            print(f"ALREADY_RAN_TODAY")
         else:
-            print(f"✅ Last run: {last_run}. Today: {today}. Proceeding.")
-            sys.exit(1)   # not yet run — proceed
+            print(f"PROCEED")
 
-    except Exception as e:
-        # File doesn't exist yet (first ever run) or any other error → proceed
-        print(f"ℹ️  Could not read {filename} ({e}). Proceeding with training.")
-        sys.exit(1)   # proceed
+    except Exception:
+        # File doesn't exist yet or any error → proceed
+        print("PROCEED")
 
 
 if __name__ == "__main__":
