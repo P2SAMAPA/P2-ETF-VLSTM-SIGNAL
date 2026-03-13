@@ -1,0 +1,52 @@
+name: Retrain — Expanding Stream
+
+on:
+  schedule:
+    # 21:30 UTC Sunday = before Monday market open
+    # Runs in parallel with retrain_shrinking.yml on separate runner
+    # Combined wall-clock time: ~3.7 hrs instead of ~7.4 hrs
+    - cron: '30 21 * * 0'
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: 'Run benchmark timing only (true/false)'
+        required: false
+        default: 'false'
+      epochs:
+        description: 'Max training epochs'
+        required: false
+        default: '80'
+
+jobs:
+  train_expanding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360       # 6 hour hard cap per stream
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Train expanding stream
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ "${{ github.event.inputs.benchmark }}" = "true" ]; then
+            echo "🔬 Running benchmark mode..."
+            python train.py --benchmark --epochs ${{ github.event.inputs.epochs || '80' }}
+          else
+            echo "📈 Training expanding stream..."
+            python train.py --stream expanding --epochs ${{ github.event.inputs.epochs || '80' }}
+          fi
+
+      - name: Report completion
+        if: always()
+        run: echo "✅ Expanding stream finished at $(date -u)"
