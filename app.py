@@ -182,10 +182,10 @@ PLOTLY_BASE = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
     font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
-    margin=dict(l=6, r=6, t=28, b=6),
-    xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
-    yaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
 )
+
+# Shared axis style — merge manually where needed to avoid duplicate-kwarg TypeError
+_AXIS_STYLE = dict(gridcolor="#d1d9e6", showline=False, zeroline=False)
 
 
 def etf_color(etf: str) -> str:
@@ -242,7 +242,8 @@ def proba_bar_chart(proba: dict, height=155) -> go.Figure:
     ))
     y_max = max(vals) * 1.4 if vals else 1.0
     fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
-                      yaxis=dict(visible=False, range=[0, y_max]),
+                      xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+                      yaxis=dict(visible=False, range=[0, y_max], gridcolor="#d1d9e6"),
                       margin=dict(l=4, r=4, t=6, b=4))
     return fig
 
@@ -265,8 +266,8 @@ def vsn_bar_chart(vsn_top: list, height=None) -> go.Figure | None:
     ))
     h = height or max(120, len(names) * 22)
     fig.update_layout(**PLOTLY_BASE, height=h, showlegend=False,
-                      xaxis=dict(visible=False),
-                      yaxis=dict(tickfont=dict(family="Space Mono", size=9, color="#5a6a80")),
+                      xaxis=dict(visible=False, gridcolor="#d1d9e6", showline=False, zeroline=False),
+                      yaxis=dict(tickfont=dict(family="Space Mono", size=9, color="#5a6a80"), gridcolor="#d1d9e6", showline=False, zeroline=False),
                       margin=dict(l=4, r=4, t=6, b=4))
     return fig
 
@@ -293,7 +294,8 @@ def dist_bar_chart(live_sigs: list, height=190) -> go.Figure:
     fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
                       title="Live Signal Distribution Across Windows",
                       title_font=dict(family="Space Mono", size=12, color="#5a6a80"),
-                      yaxis=dict(visible=False, range=[0, y_max]),
+                      xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+                      yaxis=dict(visible=False, range=[0, y_max], gridcolor="#d1d9e6"),
                       margin=dict(l=6, r=6, t=34, b=6))
     return fig
 
@@ -549,6 +551,8 @@ def render_history(hist_df: pd.DataFrame):
                 fig.update_layout(**PLOTLY_BASE, height=200, showlegend=True,
                                   title=f"{label} — daily consensus",
                                   title_font=dict(family="Space Mono", size=10, color="#5a6a80"),
+                                  xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+                                  yaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
                                   legend=dict(font=dict(family="Space Mono", size=9)))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
