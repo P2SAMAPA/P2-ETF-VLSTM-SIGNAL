@@ -46,17 +46,17 @@ st.markdown("""
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap');
 
   :root {
-    --bg:        #0a0e14;
-    --bg2:       #111720;
-    --bg3:       #1a2332;
-    --border:    #1e2d42;
-    --accent:    #00d4ff;
-    --accent2:   #7b61ff;
-    --green:     #00e5a0;
-    --red:       #ff4d6d;
-    --amber:     #ffc857;
-    --text:      #e8edf5;
-    --muted:     #6b7e96;
+    --bg:        #ffffff;
+    --bg2:       #f5f7fa;
+    --bg3:       #edf0f5;
+    --border:    #d1d9e6;
+    --accent:    #0077cc;
+    --accent2:   #5b3fd4;
+    --green:     #00965a;
+    --red:       #d6294a;
+    --amber:     #c97d00;
+    --text:      #1a2333;
+    --muted:     #5a6a80;
     --mono:      'Space Mono', monospace;
     --sans:      'DM Sans', sans-serif;
   }
@@ -137,18 +137,18 @@ st.markdown("""
 
   /* Consensus banner */
   .banner { border-radius: 10px; padding: 1.5rem 2rem; margin-bottom: 1.5rem; border: 1px solid; }
-  .banner-strong   { background: #001a2e; border-color: #00d4ff44; }
-  .banner-majority { background: #0f1a10; border-color: #00e5a044; }
-  .banner-split    { background: #1a1200; border-color: #ffc85744; }
+  .banner-strong   { background: #e8f4ff; border-color: #0077cc44; }
+  .banner-majority { background: #e8fff5; border-color: #00965a44; }
+  .banner-split    { background: #fff8e8; border-color: #c97d0044; }
   .banner-none     { background: var(--bg2); border-color: var(--border); }
 
   .banner-label  { font-family:var(--mono); font-size:0.62rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); margin-bottom:0.4rem; }
   .banner-signal { font-family:var(--mono); font-size:2.6rem; font-weight:700; letter-spacing:0.04em; line-height:1; }
   .banner-meta   { font-family:var(--sans); font-size:0.85rem; color:var(--muted); margin-top:0.5rem; }
 
-  .sig-strong   { color: #00d4ff; }
-  .sig-majority { color: #00e5a0; }
-  .sig-split    { color: #ffc857; }
+  .sig-strong   { color: #0077cc; }
+  .sig-majority { color: #00965a; }
+  .sig-split    { color: #c97d00; }
   .sig-none     { color: var(--muted); }
 
   /* Pulse dot */
@@ -169,26 +169,26 @@ st.markdown("""
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ETF_COLORS = {
-    "TLT": "#00d4ff",
-    "VNQ": "#7b61ff",
-    "SLV": "#c0c0c0",
-    "GLD": "#ffc857",
-    "HYG": "#ff4d6d",
-    "LQD": "#00e5a0",
+    "TLT": "#0077cc",
+    "VNQ": "#5b3fd4",
+    "SLV": "#7a8a9e",
+    "GLD": "#c97d00",
+    "HYG": "#d6294a",
+    "LQD": "#00965a",
 }
 
 PLOTLY_BASE = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(family="Space Mono, monospace", color="#6b7e96", size=10),
+    font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
     margin=dict(l=6, r=6, t=28, b=6),
-    xaxis=dict(gridcolor="#1e2d42", showline=False, zeroline=False),
-    yaxis=dict(gridcolor="#1e2d42", showline=False, zeroline=False),
+    xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+    yaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
 )
 
 
 def etf_color(etf: str) -> str:
-    return ETF_COLORS.get(etf, "#6b7e96")
+    return ETF_COLORS.get(etf, "#5a6a80")
 
 def fmt_pct(v, decimals=1):
     if v is None: return "—"
@@ -237,10 +237,11 @@ def proba_bar_chart(proba: dict, height=155) -> go.Figure:
         marker_color=colors, marker_line_width=0,
         text=[f"{v*100:.1f}%" for v in vals],
         textposition="outside",
-        textfont=dict(family="Space Mono", size=9, color="#6b7e96"),
+        textfont=dict(family="Space Mono", size=9, color="#5a6a80"),
     ))
+    y_max = max(vals) * 1.4 if vals else 1.0
     fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
-                      yaxis=dict(visible=False, range=[0, max(vals)*1.4]),
+                      yaxis=dict(visible=False, range=[0, y_max]),
                       margin=dict(l=4, r=4, t=6, b=4))
     return fig
 
@@ -253,10 +254,10 @@ def vsn_bar_chart(vsn_top: list, height=None) -> go.Figure | None:
     weights = [f["weight"]  for f in reversed(vsn_top)]
     colors  = []
     for n in names:
-        if "macd" in n:   colors.append("#7b61ff")
-        elif "_r" in n:   colors.append("#00d4ff")
-        elif "_vol" in n: colors.append("#ffc857")
-        else:             colors.append("#00e5a0")
+        if "macd" in n:   colors.append("#5b3fd4")
+        elif "_r" in n:   colors.append("#0077cc")
+        elif "_vol" in n: colors.append("#c97d00")
+        else:             colors.append("#00965a")
     fig = go.Figure(go.Bar(
         x=weights, y=names, orientation="h",
         marker_color=colors, marker_line_width=0,
@@ -264,7 +265,7 @@ def vsn_bar_chart(vsn_top: list, height=None) -> go.Figure | None:
     h = height or max(120, len(names) * 22)
     fig.update_layout(**PLOTLY_BASE, height=h, showlegend=False,
                       xaxis=dict(visible=False),
-                      yaxis=dict(tickfont=dict(family="Space Mono", size=9, color="#6b7e96")),
+                      yaxis=dict(tickfont=dict(family="Space Mono", size=9, color="#5a6a80")),
                       margin=dict(l=4, r=4, t=6, b=4))
     return fig
 
@@ -274,16 +275,25 @@ def dist_bar_chart(live_sigs: list, height=190) -> go.Figure:
     etfs = sorted(cnt.keys(), key=lambda e: -cnt[e])
     vals = [cnt[e] for e in etfs]
     colors = [etf_color(e) for e in etfs]
+
+    # FIX: guard against empty vals
+    if not vals:
+        fig = go.Figure()
+        fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
+                          title="Live Signal Distribution Across Windows",
+                          title_font=dict(family="Space Mono", size=10, color="#5a6a80"))
+        return fig
+
     fig = go.Figure(go.Bar(
         x=etfs, y=vals,
         marker_color=colors, marker_line_width=0,
         text=vals, textposition="outside",
-        textfont=dict(family="Space Mono", size=10, color="#6b7e96"),
+        textfont=dict(family="Space Mono", size=10, color="#5a6a80"),
     ))
     fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
                       title="Live Signal Distribution Across Windows",
-                      title_font=dict(family="Space Mono", size=10, color="#6b7e96"),
-                      yaxis=dict(visible=False, range=[0, max(vals)*1.3]),
+                      title_font=dict(family="Space Mono", size=10, color="#5a6a80"),
+                      yaxis=dict(visible=False, range=[0, max(vals) * 1.3]),
                       margin=dict(l=6, r=6, t=34, b=6))
     return fig
 
@@ -326,10 +336,10 @@ def render_banner(consensus: dict, stream_name: str):
     for i, (etf, count) in enumerate(sorted(vote_counts.items(), key=lambda x: -x[1])):
         pct = count / total * 100 if total else 0
         c = etf_color(etf)
-        cols[i].markdown(f"""<div class="card-sm" style="border-color:{c}33;">
+        cols[i].markdown(f"""<div class="card-sm" style="border-color:{c}55;">
           <div style="font-family:var(--mono);font-size:1.05rem;color:{c};font-weight:700;">{etf}</div>
           <div style="font-size:0.72rem;color:var(--muted);">{count} votes &nbsp; {pct:.0f}%</div>
-          <div style="margin-top:5px;height:3px;background:#1a2332;border-radius:2px;">
+          <div style="margin-top:5px;height:3px;background:#d1d9e6;border-radius:2px;">
             <div style="width:{pct:.0f}%;height:3px;background:{c};border-radius:2px;"></div>
           </div>
         </div>""", unsafe_allow_html=True)
@@ -405,10 +415,10 @@ def render_window(r: dict, idx: int):
                                     config={"displayModeBar": False})
                 st.markdown("""<div style="font-size:0.62rem;color:var(--muted);
                                 font-family:var(--mono);display:flex;gap:12px;flex-wrap:wrap;">
-                  <span style="color:#00d4ff;">■ Returns</span>
-                  <span style="color:#7b61ff;">■ MACD</span>
-                  <span style="color:#ffc857;">■ Vol</span>
-                  <span style="color:#00e5a0;">■ Macro/Other</span>
+                  <span style="color:#0077cc;">■ Returns</span>
+                  <span style="color:#5b3fd4;">■ MACD</span>
+                  <span style="color:#c97d00;">■ Vol</span>
+                  <span style="color:#00965a;">■ Macro/Other</span>
                 </div>""", unsafe_allow_html=True)
             else:
                 st.markdown('<div class="sec">VSN Attention</div>', unsafe_allow_html=True)
@@ -538,7 +548,7 @@ def render_history(hist_df: pd.DataFrame):
                     ))
                 fig.update_layout(**PLOTLY_BASE, height=200, showlegend=True,
                                   title=f"{label} — daily consensus",
-                                  title_font=dict(family="Space Mono", size=10, color="#6b7e96"),
+                                  title_font=dict(family="Space Mono", size=10, color="#5a6a80"),
                                   legend=dict(font=dict(family="Space Mono", size=9)))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -574,7 +584,7 @@ def main():
     shr_data     = data.get("shrinking",    {})  if data else {}
 
     status_ok    = bool(data)
-    status_color = "#00e5a0" if status_ok else "#ff4d6d"
+    status_color = "#00965a" if status_ok else "#d6294a"
     status_msg   = (f"Last run: {run_date} &nbsp;·&nbsp; Data through: {data_through}"
                     if status_ok else "No data — check HF_TOKEN environment variable")
 
