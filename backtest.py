@@ -192,23 +192,29 @@ def spy_benchmark(df_raw: pd.DataFrame, dates: pd.DatetimeIndex) -> dict:
 def _annualised_return(daily_rets: np.ndarray) -> float:
     if len(daily_rets) == 0:
         return 0.0
-    cum = float(np.prod(1.0 + daily_rets))
-    n   = len(daily_rets)
+    # Replace NaN/inf returns with 0 before compounding
+    clean = np.where(np.isfinite(daily_rets), daily_rets, 0.0)
+    cum = float(np.prod(1.0 + clean))
+    n   = len(clean)
+    if cum <= 0:
+        return 0.0
     return float(cum ** (TRADING_DAYS / n) - 1)
 
 
 def _sharpe_ratio(daily_rets: np.ndarray) -> float:
-    if len(daily_rets) < 5:
+    clean = np.where(np.isfinite(daily_rets), daily_rets, 0.0)
+    if len(clean) < 5:
         return 0.0
-    mu  = float(np.mean(daily_rets))
-    std = float(np.std(daily_rets)) + 1e-8
+    mu  = float(np.mean(clean))
+    std = float(np.std(clean)) + 1e-8
     return float(mu / std * np.sqrt(TRADING_DAYS))
 
 
 def _max_drawdown(daily_rets: np.ndarray) -> float:
-    if len(daily_rets) == 0:
+    clean = np.where(np.isfinite(daily_rets), daily_rets, 0.0)
+    if len(clean) == 0:
         return 0.0
-    cum  = np.cumprod(1.0 + daily_rets)
+    cum  = np.cumprod(1.0 + clean)
     peak = np.maximum.accumulate(cum)
     dd   = (cum - peak) / (peak + 1e-8)
     return float(dd.min())
@@ -254,7 +260,7 @@ def build_window_comparison(results: list) -> pd.DataFrame:
 def generate_live_signal(
     model,
     X_full:      np.ndarray,    # full-dataset features (unscaled), shape [T, n_features]
-    scale_mean:  np.ndarray,    # scaler fitted on this window's train set
+    scale_mean:  np.ndarray,    # scaler fitted on this window's train set, shape [1,1,n_features]
     scale_std:   np.ndarray,
     lookback:    int,
     target_etfs: list,
@@ -267,24 +273,23 @@ def generate_live_signal(
     Scaling uses this window's own scaler — critical for like-for-like comparison.
     The model never saw this data during training.
     """
-    from vlstm import predict, build_sequences
+    from vlstm import predict
 
     if X_full is None or len(X_full) < lookback:
         return {"signal": None, "proba": {}, "confidence": 0.0,
                 "vsn_top_features": [], "error": "insufficient data"}
 
-    # Take last lookback+1 rows → build one sequence of length lookback
-    window_data = X_full[-(lookback + 1):]
+    # Take the last `lookback` rows as a single sequence [1, lookback, n_features]
+    window_data = X_full[-lookback:]                      # [lookback, n_features]
+    X_seq       = window_data[np.newaxis, :, :]           # [1, lookback, n_features]
 
     # Scale using this window's training statistics
-    X_scaled = (window_data - scale_mean) / (scale_std + 1e-8)
-    X_scaled = np.clip(X_scaled, -10, 10)
-
-    # Build single sequence [1, lookback, n_features]
-    X_seq = X_scaled[np.newaxis, :-1, :]     # shape [1, lookback, n_features]
+    # scale_mean/std have shape [1, 1, n_features] from scale_features()
+    X_seq_scaled = (X_seq - scale_mean) / (scale_std + 1e-8)
+    X_seq_scaled = np.clip(X_seq_scaled, -10, 10).astype(np.float32)
 
     try:
-        preds, proba, attn = predict(model, X_seq)
+        preds, proba, attn = predict(model, X_seq_scaled)
     except Exception as e:
         return {"signal": None, "proba": {}, "confidence": 0.0,
                 "vsn_top_features": [], "error": str(e)}
