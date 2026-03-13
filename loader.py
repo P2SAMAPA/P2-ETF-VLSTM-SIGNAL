@@ -275,24 +275,27 @@ def build_features(
 # ── Window generators ─────────────────────────────────────────────────────────
 
 def expanding_windows(
-    first_train_end: int = 2010,
+    first_train_end: int = 2011,
     data_end_year:   int = None,
     df_raw:          pd.DataFrame = None,
+    step:            int = 3,
 ) -> list:
     """
-    Generates expanding window configs:
-      (start=2008, end=first_train_end),
-      (start=2008, end=first_train_end+1),
-      ...
-      (start=2008, end=data_end_year)
+    Generates expanding window configs in step-year increments:
+      2008→2011, 2008→2014, 2008→2017, 2008→2020, 2008→2023, 2008→2026
 
-    Returns list of dicts: {start_year, end_year, label}
+    The final window (data_end_year) is always included even if not on step boundary.
+    Returns list of dicts: {start_year, end_year, label, stream}
     """
     if data_end_year is None:
         data_end_year = df_raw.index.year.max()
 
+    ends = list(range(first_train_end, data_end_year, step))
+    if data_end_year not in ends:
+        ends.append(data_end_year)
+
     windows = []
-    for end in range(first_train_end, data_end_year + 1):
+    for end in ends:
         windows.append({
             "start_year": 2008,
             "end_year":   end,
@@ -303,24 +306,26 @@ def expanding_windows(
 
 
 def shrinking_windows(
-    last_train_start: int = 2024,
-    data_end_year:    int = None,
-    df_raw:           pd.DataFrame = None,
+    data_end_year: int = None,
+    df_raw:        pd.DataFrame = None,
+    step:          int = 3,
 ) -> list:
     """
-    Generates shrinking (reverse) window configs:
-      (start=2008, end=data_end_year),
-      (start=2009, end=data_end_year),
-      ...
-      (start=last_train_start, end=data_end_year)
+    Generates shrinking window configs in step-year increments:
+      2008→2026, 2011→2026, 2014→2026, 2017→2026, 2020→2026, 2023→2026
 
-    Returns list of dicts: {start_year, end_year, label}
+    The final window (data_end_year-1 start) is always included.
+    Returns list of dicts: {start_year, end_year, label, stream}
     """
     if data_end_year is None:
         data_end_year = df_raw.index.year.max()
 
+    starts = list(range(2008, data_end_year, step))
+    if (data_end_year - 1) not in starts:
+        starts.append(data_end_year - 1)
+
     windows = []
-    for start in range(2008, last_train_start + 1):
+    for start in starts:
         windows.append({
             "start_year": start,
             "end_year":   data_end_year,
@@ -330,11 +335,12 @@ def shrinking_windows(
     return windows
 
 
-def all_windows(df_raw: pd.DataFrame) -> list:
-    """Returns all expanding + shrinking windows."""
+def all_windows(df_raw: pd.DataFrame, step: int = 3) -> list:
+    """Returns all expanding + shrinking windows at given step size."""
     data_end = df_raw.index.year.max()
-    exp  = expanding_windows(first_train_end=2010, data_end_year=data_end, df_raw=df_raw)
-    shr  = shrinking_windows(last_train_start=data_end - 1, data_end_year=data_end, df_raw=df_raw)
+    exp = expanding_windows(first_train_end=2011, data_end_year=data_end,
+                            df_raw=df_raw, step=step)
+    shr = shrinking_windows(data_end_year=data_end, df_raw=df_raw, step=step)
     return exp + shr
 
 
