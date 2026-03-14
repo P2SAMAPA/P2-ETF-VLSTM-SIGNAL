@@ -21,7 +21,7 @@ Each stream tab:
 import os
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -184,7 +184,6 @@ PLOTLY_BASE = dict(
     font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
 )
 
-# Shared axis style — merge manually where needed to avoid duplicate-kwarg TypeError
 _AXIS_STYLE = dict(gridcolor="#d1d9e6", showline=False, zeroline=False)
 
 
@@ -198,6 +197,27 @@ def fmt_pct(v, decimals=1):
 def fmt_f(v, decimals=2):
     if v is None: return "—"
     return f"{v:.{decimals}f}"
+
+
+# ── Next trading day helper ───────────────────────────────────────────────────
+
+def get_next_trading_day() -> str:
+    """
+    Returns the next trading day (Mon–Fri) from today EST as YYYY-MM-DD.
+    Handles weekends correctly:
+      Friday   → Monday  (+3 days)
+      Saturday → Monday  (+2 days)
+      Sunday   → Monday  (+1 day)
+      Mon–Thu  → next day (+1 day)
+    Does not account for US public holidays (acceptable for display purposes).
+    """
+    from datetime import timezone
+    est_now  = datetime.now(timezone.utc) - timedelta(hours=5)
+    today    = est_now.date()
+    # weekday(): Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
+    days_ahead = {4: 3, 5: 2, 6: 1}.get(today.weekday(), 1)
+    next_day = today + timedelta(days=days_ahead)
+    return next_day.strftime("%Y-%m-%d")
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -273,16 +293,12 @@ def vsn_bar_chart(vsn_top: list, height=None) -> go.Figure | None:
 
 
 def dist_bar_chart(live_sigs: list, height=190) -> go.Figure:
-    # Filter out any falsy values before counting
     clean = [s for s in (live_sigs or []) if s]
     cnt   = Counter(clean)
     etfs  = sorted(cnt.keys(), key=lambda e: -cnt[e])
     vals  = [cnt[e] for e in etfs]
     colors = [etf_color(e) for e in etfs]
-
-    # Always-safe y range — never call max() on an empty list
     y_max = (max(vals) * 1.3) if vals else 1.0
-
     fig = go.Figure()
     if vals:
         fig.add_trace(go.Bar(
@@ -317,7 +333,9 @@ def render_banner(consensus: dict, stream_name: str):
     total    = consensus.get("total_windows", 0)
     votes    = consensus.get("top_votes", 0)
     vote_counts = consensus.get("vote_counts", {})
-    today    = datetime.now().strftime("%Y-%m-%d")
+
+    # ── FIX: show next trading day, not today's calendar date ────────────────
+    next_trade_date = get_next_trading_day()
 
     if "Strong"   in strength: b_cls, s_cls = "banner-strong",   "sig-strong"
     elif "Majority" in strength: b_cls, s_cls = "banner-majority", "sig-majority"
@@ -325,7 +343,7 @@ def render_banner(consensus: dict, stream_name: str):
 
     st.markdown(f"""<div class="banner {b_cls}">
       <div class="banner-label"><span class="dot-live"></span>
-        {stream_name} · live consensus · {today}
+        {stream_name} · live consensus · {next_trade_date}
       </div>
       <div class="banner-signal {s_cls}">{sig}</div>
       <div class="banner-meta">
@@ -479,7 +497,6 @@ def render_stream(stream_data: dict, stream_name: str):
         st.info("No window results available.")
         return
 
-    # Summary row
     valid_ret  = [w.get("ann_return", 0) for w in windows if w.get("ann_return") is not None]
     valid_sh   = [w.get("sharpe",     0) for w in windows if w.get("sharpe")     is not None]
     live_sigs  = [
@@ -508,7 +525,6 @@ def render_stream(stream_data: dict, stream_name: str):
                             key=f"dist_{stream_name.replace(' ', '_')}",
                             config={"displayModeBar": False})
 
-    # Per-window breakdown
     st.markdown('<div class="sec">Per-Window Breakdown</div>', unsafe_allow_html=True)
     st.markdown(
         f"<span style='font-size:0.95rem;color:var(--muted);'>"
