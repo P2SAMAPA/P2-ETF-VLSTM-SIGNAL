@@ -2,10 +2,8 @@
 writer.py
 P2-ETF-VLSTM-SIGNAL
 
-Writes training results to HuggingFace output dataset:
-  P2SAMAPA/p2-etf-vlstm-outputs
-
-Two separate files — one per stream:
+Writes training results to HuggingFace output dataset.
+Two separate files per stream:
   expanding_latest.json   → written by retrain_expanding.yml
   shrinking_latest.json   → written by retrain_shrinking.yml
 """
@@ -19,7 +17,8 @@ import numpy as np
 import pandas as pd
 
 
-OUTPUT_DATASET = "P2SAMAPA/p2-etf-vlstm-outputs"
+# Default dataset (FI universe) – kept for backward compatibility
+DEFAULT_DATASET = "P2SAMAPA/p2-etf-vlstm-outputs"
 
 # Keys that contain non-serialisable objects or circular refs — always strip
 _STRIP_KEYS = {"equity", "daily_rets", "etf_held", "dates", "all_models"}
@@ -95,6 +94,7 @@ def write_stream(
     consensus:    dict,
     data_through: str,
     hf_token:     str,
+    dataset_name: str = DEFAULT_DATASET,   # <-- NEW: dynamic dataset
 ) -> bool:
     """
     Write one stream's results to its own file on HuggingFace.
@@ -135,14 +135,15 @@ def write_stream(
         api.upload_file(
             path_or_fileobj=io.BytesIO(json_bytes),
             path_in_repo=filename,
-            repo_id=OUTPUT_DATASET,
+            repo_id=dataset_name,          # <-- use dynamic dataset
             repo_type="dataset",
             commit_message=f"[{stream}] Update signals — {run_date}",
         )
 
-        _append_history(api, run_date, data_through, stream, consensus)
+        _append_history(api, run_date, data_through, stream, consensus,
+                        dataset_name)      # <-- pass dataset name
 
-        print(f"✅ {filename} written to {OUTPUT_DATASET} for {run_date}")
+        print(f"✅ {filename} written to {dataset_name} for {run_date}")
         return True
 
     except Exception as e:
@@ -153,7 +154,8 @@ def write_stream(
 
 # ── History appender ──────────────────────────────────────────────────────────
 
-def _append_history(api, run_date, data_through, stream, consensus):
+def _append_history(api, run_date, data_through, stream, consensus,
+                    dataset_name: str):
     prefix  = "exp" if stream == "expanding" else "shr"
     new_row = {
         "run_date":            run_date,
@@ -166,7 +168,7 @@ def _append_history(api, run_date, data_through, stream, consensus):
     try:
         from huggingface_hub import hf_hub_download
         local    = hf_hub_download(
-            repo_id=OUTPUT_DATASET, filename="history.parquet",
+            repo_id=dataset_name, filename="history.parquet",
             repo_type="dataset", token=api.token, force_download=True,
         )
         existing = pd.read_parquet(local)
@@ -186,7 +188,7 @@ def _append_history(api, run_date, data_through, stream, consensus):
     api.upload_file(
         path_or_fileobj=buf,
         path_in_repo="history.parquet",
-        repo_id=OUTPUT_DATASET,
+        repo_id=dataset_name,
         repo_type="dataset",
         commit_message=f"[{stream}] Append history — {run_date}",
     )
@@ -194,39 +196,44 @@ def _append_history(api, run_date, data_through, stream, consensus):
 
 # ── Readers (used by Streamlit) ───────────────────────────────────────────────
 
-def load_stream(stream: str, hf_token: str) -> dict:
+def load_stream(stream: str, hf_token: str, dataset_name: str = DEFAULT_DATASET) -> dict:
+    """Load the latest JSON file for a given stream from the specified dataset."""
     assert stream in ("expanding", "shrinking")
     filename = f"{stream}_latest.json"
     try:
         from huggingface_hub import hf_hub_download
         local = hf_hub_download(
-            repo_id=OUTPUT_DATASET, filename=filename,
+            repo_id=dataset_name, filename=filename,
             repo_type="dataset", token=hf_token, force_download=True,
         )
         with open(local) as f:
             return json.load(f)
     except Exception as e:
-        print(f"⚠️  Could not load {filename}: {e}")
+        print(f"⚠️  Could not load {filename} from {dataset_name}: {e}")
         return {}
 
 
-def load_history(hf_token: str) -> pd.DataFrame:
+def load_history(hf_token: str, dataset_name: str = DEFAULT_DATASET) -> pd.DataFrame:
+    """Load the history.parquet file from the specified dataset."""
     try:
         from huggingface_hub import hf_hub_download
         local = hf_hub_download(
-            repo_id=OUTPUT_DATASET, filename="history.parquet",
+            repo_id=dataset_name, filename="history.parquet",
             repo_type="dataset", token=hf_token, force_download=True,
         )
         return pd.read_parquet(local)
     except Exception as e:
-        print(f"⚠️  Could not load history.parquet: {e}")
+        print(f"⚠️  Could not load history.parquet from {dataset_name}: {e}")
         return pd.DataFrame()
 
 
-def load_latest(hf_token: str) -> dict:
-    """Assembles both stream files into a single dict for app.py."""
-    exp = load_stream("expanding", hf_token)
-    shr = load_stream("shrinking", hf_token)
+def load_latest(hf_token: str, dataset_name: str = DEFAULT_DATASET) -> dict:
+    """
+    Assembles both stream files into a single dict for app.py.
+    If dataset_name is provided, it loads from that dataset; otherwise uses default.
+    """
+    exp = load_stream("expanding", hf_token, dataset_name)
+    shr = load_stream("shrinking", hf_token, dataset_name)
     if not exp and not shr:
         return {}
     return {
