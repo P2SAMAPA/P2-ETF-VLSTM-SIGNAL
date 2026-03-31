@@ -28,34 +28,26 @@ on:
         default: '80'
 
 jobs:
-  train_expanding:
-    strategy:
-      matrix:
-        universe: ['fi', 'equity']   # Run both universes on schedule
+  train_expanding_fi:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    # For manual dispatch, use the selected universe (override matrix)
-    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.universe == matrix.universe) }}
+    # Run on schedule OR manual dispatch when universe == fi
+    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.universe == 'fi') }}
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+      - run: pip install -r requirements.txt
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Check if already ran today (per universe)
+      - name: Check if already ran today
         if: ${{ github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          RESULT=$(python check_run_date.py --stream expanding --universe ${{ matrix.universe }})
+          RESULT=$(python check_run_date.py --stream expanding --universe fi)
           echo "Date check result: $RESULT"
           if [ "$RESULT" = "ALREADY_RAN_TODAY" ]; then
             echo "SKIP=true" >> $GITHUB_ENV
@@ -63,24 +55,73 @@ jobs:
             echo "SKIP=false" >> $GITHUB_ENV
           fi
 
-      - name: Train expanding stream
+      - name: Train expanding stream (FI)
         if: ${{ env.SKIP != 'true' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ "${{ github.event.inputs.benchmark }}" = "true" ]; then
-            echo "🔬 Running benchmark mode for ${{ matrix.universe }}..."
-            python train.py --universe ${{ matrix.universe }} --benchmark --epochs ${{ github.event.inputs.epochs || '80' }}
+            echo "🔬 Running benchmark mode (FI)..."
+            python train.py --universe fi --benchmark --epochs ${{ github.event.inputs.epochs || '80' }}
           else
-            echo "📈 Training expanding stream for ${{ matrix.universe }}..."
-            python train.py --universe ${{ matrix.universe }} --stream expanding --epochs ${{ github.event.inputs.epochs || '80' }}
+            echo "📈 Training expanding stream (FI)..."
+            python train.py --universe fi --stream expanding --epochs ${{ github.event.inputs.epochs || '80' }}
           fi
 
-      - name: Report completion
+      - name: Report completion (FI)
         if: always()
         run: |
           if [ "${{ env.SKIP }}" = "true" ]; then
-            echo "⏭️  Skipped ${{ matrix.universe }} — already ran today"
+            echo "⏭️  Skipped FI — already ran today"
           else
-            echo "✅ Expanding stream (${{ matrix.universe }}) finished at $(date -u)"
+            echo "✅ Expanding stream (FI) finished at $(date -u)"
+          fi
+
+  train_expanding_equity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    # Run on schedule OR manual dispatch when universe == equity
+    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.universe == 'equity') }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+
+      - name: Check if already ran today
+        if: ${{ github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          RESULT=$(python check_run_date.py --stream expanding --universe equity)
+          echo "Date check result: $RESULT"
+          if [ "$RESULT" = "ALREADY_RAN_TODAY" ]; then
+            echo "SKIP=true" >> $GITHUB_ENV
+          else
+            echo "SKIP=false" >> $GITHUB_ENV
+          fi
+
+      - name: Train expanding stream (Equity)
+        if: ${{ env.SKIP != 'true' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ "${{ github.event.inputs.benchmark }}" = "true" ]; then
+            echo "🔬 Running benchmark mode (Equity)..."
+            python train.py --universe equity --benchmark --epochs ${{ github.event.inputs.epochs || '80' }}
+          else
+            echo "📈 Training expanding stream (Equity)..."
+            python train.py --universe equity --stream expanding --epochs ${{ github.event.inputs.epochs || '80' }}
+          fi
+
+      - name: Report completion (Equity)
+        if: always()
+        run: |
+          if [ "${{ env.SKIP }}" = "true" ]; then
+            echo "⏭️  Skipped Equity — already ran today"
+          else
+            echo "✅ Expanding stream (Equity) finished at $(date -u)"
           fi
