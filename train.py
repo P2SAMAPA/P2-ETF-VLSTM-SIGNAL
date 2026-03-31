@@ -12,7 +12,7 @@ Flow:
        b. Find best lookback (30/45/60d)
        c. Train VLSTM
        d. Backtest on test slice
-       e. Generate live next-day signal (2026-03-13)
+       e. Generate live next-day signal (today)
        f. Pick best of 4 models by val_sharpe
   3. Compute stream consensus (expanding / shrinking)
   4. Write outputs to HF dataset
@@ -27,6 +27,7 @@ import sys
 import time
 import argparse
 import numpy as np
+import pandas as pd
 
 from loader   import (load_raw, build_features, all_windows,
                       expanding_windows, shrinking_windows,
@@ -38,11 +39,11 @@ from backtest import (execute_strategy, generate_live_signal,
                       summarise_window_result, stream_consensus)
 from conviction import compute_conviction
 from writer   import write_stream
+from config   import get_config   # <-- NEW: dynamic universe config
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-TARGET_ETFS  = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD"]
 OPTIONS      = ["A", "B"]
 LOSS_MODES   = ["ce", "sharpe"]
 LOOKBACKS    = [30, 45, 60]
@@ -61,14 +62,16 @@ FEE_BPS      = 10.0
 # ── Single window trainer ─────────────────────────────────────────────────────
 
 def train_one_window(
-    window:    dict,
+    window:       dict,
     df_raw,
-    X_full_A:  np.ndarray,     # full dataset features option A (for live signal)
-    X_full_B:  np.ndarray,     # full dataset features option B
+    X_full_A:     np.ndarray,
+    X_full_B:     np.ndarray,
     feat_names_A: list,
     feat_names_B: list,
-    epochs:    int = EPOCHS,
-    verbose:   bool = True,
+    target_etfs:  list,          # <-- NEW: dynamic ETF list
+    n_etfs:       int,           # <-- NEW: number of ETFs
+    epochs:       int = EPOCHS,
+    verbose:      bool = True,
 ) -> dict:
     """
     Train all 4 models (A_ce, A_sharpe, B_ce, B_sharpe) for one window.
@@ -94,14 +97,14 @@ def train_one_window(
         y_returns = feat["y_returns"]
         feat_names= feat["feature_names"]
         dates     = feat["dates"]
-        n_etfs    = feat["n_etfs"]
-        n_features= X.shape[1]
+        n_feat    = X.shape[1]        # n_features (same for all ETFs)
+        # n_etfs is passed in from config
 
         # Auto-select lookback
         try:
             lookback = find_best_lookback(
                 X, y_labels, y_returns,
-                TRAIN_PCT, VAL_PCT, n_etfs, n_features,
+                TRAIN_PCT, VAL_PCT, n_etfs, n_feat,
                 candidates=LOOKBACKS, epochs=15,
             )
         except Exception:
@@ -166,7 +169,7 @@ def train_one_window(
             preds, proba, attn = predict(model, X_test_s)
             bt = execute_strategy(
                 preds, proba, y_test_r, dates_test,
-                TARGET_ETFS, FEE_BPS,
+                target_etfs, FEE_BPS,          # <-- use dynamic target_etfs
             )
 
             # Live signal — use full dataset features for this option
@@ -175,7 +178,7 @@ def train_one_window(
 
             live = generate_live_signal(
                 model, X_full, scale_mean, scale_std,
-                lookback, TARGET_ETFS, fn,
+                lookback, target_etfs, fn,      # <-- use dynamic target_etfs
             )
 
             result = summarise_window_result(
@@ -204,10 +207,13 @@ def train_one_window(
 # ── Stream training run ───────────────────────────────────────────────────────
 
 def run_stream(
-    stream:   str,          # "expanding" or "shrinking"
+    stream:      str,          # "expanding" or "shrinking"
     df_raw,
-    hf_token: str,
-    epochs:   int = EPOCHS,
+    hf_token:    str,
+    target_etfs: list,         # <-- NEW: dynamic ETF list
+    n_etfs:      int,          # <-- NEW: number of ETFs
+    output_dataset: str,       # <-- NEW: HuggingFace dataset name
+    epochs:      int = EPOCHS,
 ):
     """
     Train all windows for one stream only and write its results to HF.
@@ -219,6 +225,7 @@ def run_stream(
 
     print("=" * 60)
     print(f"P2-ETF-VLSTM-SIGNAL  |  {stream.upper()} STREAM")
+    print(f"Universe: {target_etfs}")
     print("=" * 60)
 
     data_through = str(df_raw.index[-1].date())
@@ -266,7 +273,8 @@ def run_stream(
     for i, window in enumerate(windows):
         print(f"\n[{i+1}/{len(windows)}] Window: {window['label']}")
         result = train_one_window(
-            window, df_raw, X_full_A, X_full_B, fn_A, fn_B, epochs=epochs
+            window, df_raw, X_full_A, X_full_B, fn_A, fn_B,
+            target_etfs, n_etfs, epochs=epochs
         )
         if result:
             results.append(result)
@@ -277,18 +285,19 @@ def run_stream(
     print(f"\n⏱️  {stream.capitalize()} training time: {total_elapsed/60:.1f} minutes")
 
     # Compute consensus
-    consensus = stream_consensus(results, TARGET_ETFS)
+    consensus = stream_consensus(results, target_etfs)   # <-- dynamic
     print(f"\n📊 {stream.capitalize()} consensus: {consensus.get('signal')} "
           f"({consensus.get('strength')})")
 
-    # Write to HF
-    print(f"\n📤 Writing {stream}_latest.json to HuggingFace...")
+    # Write to HF using the universe‑specific dataset name
+    print(f"\n📤 Writing {stream}_latest.json to {output_dataset}...")
     write_stream(
         stream       = stream,
         results      = results,
         consensus    = consensus,
         data_through = data_through,
         hf_token     = hf_token,
+        dataset_name = output_dataset,   # <-- dynamic dataset
     )
 
     print("\n✅ Done.")
@@ -297,15 +306,14 @@ def run_stream(
 
 # ── Benchmark mode ────────────────────────────────────────────────────────────
 
-def run_benchmark(df_raw, epochs: int = EPOCHS):
+def run_benchmark(df_raw, target_etfs, n_etfs, epochs: int = EPOCHS):
     """
     Train a single window (2008→2020) with all 4 models.
     Print timing and extrapolate to full run.
     """
-    import pandas as pd
-
     print("=" * 60)
     print("⏱️  BENCHMARK MODE — timing single window (2008→2020)")
+    print(f"Universe: {target_etfs}")
     print("=" * 60)
 
     window = {
@@ -314,8 +322,6 @@ def run_benchmark(df_raw, epochs: int = EPOCHS):
         "label":      "2008→2020",
         "stream":     "expanding",
     }
-
-    data_end   = df_raw.index.year.max()
 
     try:
         full_A = build_features(df_raw, option="A", start_year=2008)
@@ -341,8 +347,7 @@ def run_benchmark(df_raw, epochs: int = EPOCHS):
 
         X, y_labels, y_returns = feat["X"], feat["y_labels"], feat["y_returns"]
         n_features = X.shape[1]
-        n_etfs     = feat["n_etfs"]
-        dates      = feat["dates"]
+        # n_etfs from config
 
         lookback = find_best_lookback(
             X, y_labels, y_returns,
@@ -418,6 +423,9 @@ def run_benchmark(df_raw, epochs: int = EPOCHS):
 
 def main():
     parser = argparse.ArgumentParser(description="P2-ETF-VLSTM-SIGNAL trainer")
+    parser.add_argument("--universe", type=str, default="fi",
+                        choices=["fi", "equity"],
+                        help="ETF universe: 'fi' (fixed income, default) or 'equity'")
     parser.add_argument("--stream", type=str, default="both",
                         choices=["expanding", "shrinking", "both"],
                         help="Which stream to train (default: both)")
@@ -432,6 +440,16 @@ def main():
         print("❌ HF_TOKEN environment variable not set.")
         sys.exit(1)
 
+    # Load universe configuration
+    config = get_config(args.universe)
+    target_etfs = config["target_etfs"]
+    n_etfs = config["n_etfs"]
+    output_dataset = config["output_dataset"]
+
+    print(f"\n🌍 Using universe: {args.universe}")
+    print(f"   Target ETFs: {target_etfs}")
+    print(f"   Output dataset: {output_dataset}\n")
+
     print("📡 Loading dataset from HuggingFace...")
     df_raw = load_raw(hf_token)
     summary = dataset_summary(df_raw)
@@ -441,17 +459,15 @@ def main():
     print(f"   Macro: {summary['macro']}")
 
     if args.benchmark:
-        run_benchmark(df_raw, epochs=args.epochs)
+        run_benchmark(df_raw, target_etfs, n_etfs, epochs=args.epochs)
     elif args.stream == "both":
         # Sequential fallback — used if running locally or with single yml
-        run_stream("expanding", df_raw, hf_token, epochs=args.epochs)
-        run_stream("shrinking", df_raw, hf_token, epochs=args.epochs)
+        run_stream("expanding", df_raw, hf_token, target_etfs, n_etfs, output_dataset, epochs=args.epochs)
+        run_stream("shrinking", df_raw, hf_token, target_etfs, n_etfs, output_dataset, epochs=args.epochs)
     else:
         # Single stream — called by retrain_expanding.yml / retrain_shrinking.yml
-        run_stream(args.stream, df_raw, hf_token, epochs=args.epochs)
+        run_stream(args.stream, df_raw, hf_token, target_etfs, n_etfs, output_dataset, epochs=args.epochs)
 
 
 if __name__ == "__main__":
-    # Fix for the placeholder used above — import pandas properly
-    import pandas as pd
     main()
