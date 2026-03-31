@@ -2,18 +2,19 @@
 app.py
 P2-ETF-VLSTM-SIGNAL
 
-Streamlit display-only UI. No training happens here.
+Streamlit display‑only UI. No training happens here.
 Reads latest.json + history.parquet from HuggingFace output dataset.
 
 Layout:
-  Tab 1 — Expanding Stream  (2008→2010 … 2008→2025)
-  Tab 2 — Shrinking Stream  (2008→2025 … 2024→2025)
+  Sidebar: choose FI or Equity universe.
+  Tab 1 — Expanding Stream
+  Tab 2 — Shrinking Stream
   Tab 3 — History
 
 Each stream tab:
   - Headline consensus banner
   - Signal distribution chart
-  - Per-window scrollable breakdown (each window expandable)
+  - Per‑window scrollable breakdown (each window expandable)
     showing: live signal, probabilities, backtest metrics,
              VSN top features, all 4 model comparison, audit trail
 """
@@ -30,6 +31,9 @@ import plotly.graph_objects as go
 import streamlit as st
 import pandas_market_calendars as mcal  # for proper trading days
 
+# Import config to get ETF lists and dataset names
+from config import get_config, UNIVERSE_CONFIG
+
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -37,10 +41,10 @@ st.set_page_config(
     page_title="ETF VLSTM Signal",
     page_icon="📡",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",   # make sidebar visible for universe selector
 )
 
-# ── Theme & CSS ───────────────────────────────────────────────────────────────
+# ── Theme & CSS (unchanged) ──────────────────────────────────────────────────
 
 st.markdown("""
 <style>
@@ -168,91 +172,75 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── Helper for dynamic ETF colors ────────────────────────────────────────────
 
-ETF_COLORS = {
-    "TLT": "#0077cc",
-    "VNQ": "#5b3fd4",
-    "SLV": "#7a8a9e",
-    "GLD": "#c97d00",
-    "HYG": "#d6294a",
-    "LQD": "#00965a",
-}
-
-PLOTLY_BASE = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
-)
-
-_AXIS_STYLE = dict(gridcolor="#d1d9e6", showline=False, zeroline=False)
-
-
-def etf_color(etf: str) -> str:
-    return ETF_COLORS.get(etf, "#5a6a80")
-
-def fmt_pct(v, decimals=1):
-    if v is None: return "—"
-    return f"{v*100:+.{decimals}f}%"
-
-def fmt_f(v, decimals=2):
-    if v is None: return "—"
-    return f"{v:.{decimals}f}"
+def get_etf_color(etf: str, target_etfs: list) -> str:
+    """
+    Generate a consistent color for an ETF based on its position in the universe.
+    Uses a fixed set of colors from a predefined palette to keep visuals clean.
+    """
+    # Predefined palette – 12 colors enough for equity universe, falls back to default
+    PALETTE = [
+        "#0077cc", "#5b3fd4", "#c97d00", "#00965a", "#d6294a", "#7a8a9e",
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
+        "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+    ]
+    if etf not in target_etfs:
+        return "#5a6a80"
+    idx = target_etfs.index(etf) % len(PALETTE)
+    return PALETTE[idx]
 
 
-# ── Next trading day helper (using NYSE calendar) ─────────────────────────────
+# ── Next trading day helper (unchanged) ───────────────────────────────────────
 
 def next_trading_day(from_date: pd.Timestamp) -> pd.Timestamp:
-    """
-    Return the next NYSE trading day after the given date.
-    Uses pandas_market_calendars for holiday awareness.
-    """
     nyse = mcal.get_calendar("NYSE")
     schedule = nyse.schedule(start_date=from_date, end_date=from_date + timedelta(days=10))
     trading_days = schedule.index
     next_days = trading_days[trading_days > from_date]
     if len(next_days) > 0:
         return next_days[0]
-    # fallback: skip weekends only
     d = from_date + timedelta(days=1)
     while d.weekday() >= 5:
         d += timedelta(days=1)
     return d
 
 
-# ── Data loading ──────────────────────────────────────────────────────────────
+# ── Data loading with universe selection ──────────────────────────────────────
 
-@st.cache_data(ttl=300)
-def load_data() -> dict:
+@st.cache_data(ttl=300, show_spinner=False)
+def load_data(universe: str) -> dict:
     hf_token = os.getenv("HF_TOKEN", "")
     if not hf_token:
         return {}
+    dataset_name = UNIVERSE_CONFIG[universe]['output_dataset']
     try:
         from writer import load_latest
-        return load_latest(hf_token)
+        return load_latest(hf_token, dataset_name=dataset_name)
     except Exception as e:
-        st.error(f"Could not load data: {e}")
+        st.error(f"Could not load data for {universe}: {e}")
         return {}
 
 
-@st.cache_data(ttl=300)
-def load_history_df() -> pd.DataFrame:
+@st.cache_data(ttl=300, show_spinner=False)
+def load_history_df(universe: str) -> pd.DataFrame:
     hf_token = os.getenv("HF_TOKEN", "")
     if not hf_token:
         return pd.DataFrame()
+    dataset_name = UNIVERSE_CONFIG[universe]['output_dataset']
     try:
         from writer import load_history
-        return load_history(hf_token)
+        return load_history(hf_token, dataset_name=dataset_name)
     except Exception:
         return pd.DataFrame()
 
 
-# ── Chart helpers ─────────────────────────────────────────────────────────────
+# ── Chart helpers (modified to accept ETF list for colors) ────────────────────
 
-def proba_bar_chart(proba: dict, height=155) -> go.Figure:
+def proba_bar_chart(proba: dict, target_etfs: list, height=155) -> go.Figure:
     etfs   = list(proba.keys())
     vals   = [proba[e] for e in etfs]
-    colors = [etf_color(e) for e in etfs]
+    colors = [get_etf_color(e, target_etfs) for e in etfs]
     fig = go.Figure(go.Bar(
         x=etfs, y=vals,
         marker_color=colors, marker_line_width=0,
@@ -261,10 +249,15 @@ def proba_bar_chart(proba: dict, height=155) -> go.Figure:
         textfont=dict(family="Space Mono", size=9, color="#5a6a80"),
     ))
     y_max = max(vals) * 1.4 if vals else 1.0
-    fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
-                      xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
-                      yaxis=dict(visible=False, range=[0, y_max], gridcolor="#d1d9e6"),
-                      margin=dict(l=4, r=4, t=6, b=4))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
+        height=height, showlegend=False,
+        xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+        yaxis=dict(visible=False, range=[0, y_max], gridcolor="#d1d9e6"),
+        margin=dict(l=4, r=4, t=6, b=4)
+    )
     return fig
 
 
@@ -285,19 +278,24 @@ def vsn_bar_chart(vsn_top: list, height=None) -> go.Figure | None:
         marker_color=colors, marker_line_width=0,
     ))
     h = height or max(120, len(names) * 22)
-    fig.update_layout(**PLOTLY_BASE, height=h, showlegend=False,
-                      xaxis=dict(visible=False, gridcolor="#d1d9e6", showline=False, zeroline=False),
-                      yaxis=dict(tickfont=dict(family="Space Mono", size=9, color="#5a6a80"), gridcolor="#d1d9e6", showline=False, zeroline=False),
-                      margin=dict(l=4, r=4, t=6, b=4))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
+        height=h, showlegend=False,
+        xaxis=dict(visible=False, gridcolor="#d1d9e6", showline=False, zeroline=False),
+        yaxis=dict(tickfont=dict(family="Space Mono", size=9, color="#5a6a80"), gridcolor="#d1d9e6", showline=False, zeroline=False),
+        margin=dict(l=4, r=4, t=6, b=4)
+    )
     return fig
 
 
-def dist_bar_chart(live_sigs: list, height=190) -> go.Figure:
+def dist_bar_chart(live_sigs: list, target_etfs: list, height=190) -> go.Figure:
     clean = [s for s in (live_sigs or []) if s]
     cnt   = Counter(clean)
     etfs  = sorted(cnt.keys(), key=lambda e: -cnt[e])
     vals  = [cnt[e] for e in etfs]
-    colors = [etf_color(e) for e in etfs]
+    colors = [get_etf_color(e, target_etfs) for e in etfs]
     y_max = (max(vals) * 1.3) if vals else 1.0
     fig = go.Figure()
     if vals:
@@ -307,18 +305,23 @@ def dist_bar_chart(live_sigs: list, height=190) -> go.Figure:
             text=vals, textposition="outside",
             textfont=dict(family="Space Mono", size=12, color="#5a6a80"),
         ))
-    fig.update_layout(**PLOTLY_BASE, height=height, showlegend=False,
-                      title="Live Signal Distribution Across Windows",
-                      title_font=dict(family="Space Mono", size=12, color="#5a6a80"),
-                      xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
-                      yaxis=dict(visible=False, range=[0, y_max], gridcolor="#d1d9e6"),
-                      margin=dict(l=6, r=6, t=34, b=6))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
+        height=height, showlegend=False,
+        title="Live Signal Distribution Across Windows",
+        title_font=dict(family="Space Mono", size=12, color="#5a6a80"),
+        xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+        yaxis=dict(visible=False, range=[0, y_max], gridcolor="#d1d9e6"),
+        margin=dict(l=6, r=6, t=34, b=6)
+    )
     return fig
 
 
-# ── Consensus banner (modified) ───────────────────────────────────────────────
+# ── Consensus banner (modified to accept target_etfs for colors) ──────────────
 
-def render_banner(consensus: dict, stream_name: str, data_through: str):
+def render_banner(consensus: dict, stream_name: str, data_through: str, target_etfs: list):
     if not consensus or not consensus.get("signal"):
         st.markdown(f"""<div class="banner banner-none">
           <div class="banner-label">{stream_name}</div>
@@ -327,15 +330,14 @@ def render_banner(consensus: dict, stream_name: str, data_through: str):
         </div>""", unsafe_allow_html=True)
         return
 
-    # Compute the next trading day from the last data date
+    # Compute next trading day
     if data_through and data_through != "—":
         try:
             last_date = pd.Timestamp(data_through)
             next_date = next_trading_day(last_date).strftime("%Y-%m-%d")
         except Exception:
-            next_date = data_through  # fallback
+            next_date = data_through
     else:
-        # Fallback to today's next trading day
         est_now = datetime.now() - timedelta(hours=5)
         today = est_now.date()
         days_ahead = {4: 3, 5: 2, 6: 1}.get(today.weekday(), 1)
@@ -366,7 +368,7 @@ def render_banner(consensus: dict, stream_name: str, data_through: str):
     cols = st.columns(len(vote_counts) or 1)
     for i, (etf, count) in enumerate(sorted(vote_counts.items(), key=lambda x: -x[1])):
         pct = count / total * 100 if total else 0
-        c = etf_color(etf)
+        c = get_etf_color(etf, target_etfs)
         cols[i].markdown(f"""<div class="card-sm" style="border-color:{c}55;">
           <div style="font-family:var(--mono);font-size:1.3rem;color:{c};font-weight:700;">{etf}</div>
           <div style="font-size:0.90rem;color:var(--muted);">{count} votes &nbsp; {pct:.0f}%</div>
@@ -376,9 +378,9 @@ def render_banner(consensus: dict, stream_name: str, data_through: str):
         </div>""", unsafe_allow_html=True)
 
 
-# ── Per-window expander ───────────────────────────────────────────────────────
+# ── Per-window expander (modified to accept target_etfs) ─────────────────────
 
-def render_window(r: dict, idx: int, stream_key: str = 'stream'):
+def render_window(r: dict, idx: int, target_etfs: list, stream_key: str = 'stream'):
     label      = r.get("label", f"Window {idx+1}")
     live       = r.get("live_signal") or {}
     sig        = live.get("signal", "—")
@@ -397,7 +399,7 @@ def render_window(r: dict, idx: int, stream_key: str = 'stream'):
     epochs_run = r.get("epochs_run", "?")
     all_models = r.get("all_models", [])
     audit      = r.get("audit_trail", [])
-    sig_color  = etf_color(sig)
+    sig_color  = get_etf_color(sig, target_etfs)
 
     title = (
         f"{label}  ·  Live → {sig}  ({conf*100:.0f}%)  "
@@ -421,7 +423,7 @@ def render_window(r: dict, idx: int, stream_key: str = 'stream'):
             c4.metric("Option",      f"Opt {option}")
 
             if proba:
-                st.plotly_chart(proba_bar_chart(proba), use_container_width=True,
+                st.plotly_chart(proba_bar_chart(proba, target_etfs), use_container_width=True,
                                 key=f"proba_{stream_key}_{idx}",
                                 config={"displayModeBar": False})
 
@@ -492,9 +494,9 @@ def render_window(r: dict, idx: int, stream_key: str = 'stream'):
                 st.dataframe(df_a, use_container_width=True, hide_index=True, height=220)
 
 
-# ── Stream tab ────────────────────────────────────────────────────────────────
+# ── Stream tab (modified to accept target_etfs) ───────────────────────────────
 
-def render_stream(stream_data: dict, stream_name: str, data_through: str):
+def render_stream(stream_data: dict, stream_name: str, data_through: str, target_etfs: list):
     if not stream_data:
         st.info("No data. Ensure HF_TOKEN is set and a training run has completed.")
         return
@@ -502,7 +504,7 @@ def render_stream(stream_data: dict, stream_name: str, data_through: str):
     consensus = stream_data.get("consensus", {})
     windows   = stream_data.get("windows", [])
 
-    render_banner(consensus, stream_name, data_through)
+    render_banner(consensus, stream_name, data_through, target_etfs)
 
     if not windows:
         st.info("No window results available.")
@@ -532,7 +534,8 @@ def render_stream(stream_data: dict, stream_name: str, data_through: str):
     if live_sigs_clean:
         col_chart, col_space = st.columns([2, 3])
         with col_chart:
-            st.plotly_chart(dist_bar_chart(live_sigs_clean), use_container_width=True,
+            st.plotly_chart(dist_bar_chart(live_sigs_clean, target_etfs),
+                            use_container_width=True,
                             key=f"dist_{stream_name.replace(' ', '_')}",
                             config={"displayModeBar": False})
 
@@ -546,12 +549,12 @@ def render_stream(stream_data: dict, stream_name: str, data_through: str):
     st.markdown("<br>", unsafe_allow_html=True)
 
     for i, w in enumerate(windows):
-        render_window(w, i, stream_key=stream_name.replace(' ', '_'))
+        render_window(w, i, target_etfs, stream_key=stream_name.replace(' ', '_'))
 
 
-# ── History tab ───────────────────────────────────────────────────────────────
+# ── History tab (modified to accept target_etfs for colors) ───────────────────
 
-def render_history(hist_df: pd.DataFrame):
+def render_history(hist_df: pd.DataFrame, target_etfs: list):
     if hist_df.empty:
         st.info("No history yet — history builds after the first training run.")
         return
@@ -575,15 +578,20 @@ def render_history(hist_df: pd.DataFrame):
                         x=hist_df[mask]["run_date"],
                         y=[etf] * mask.sum(),
                         mode="markers",
-                        marker=dict(color=etf_color(etf), size=12, symbol="circle"),
+                        marker=dict(color=get_etf_color(etf, target_etfs), size=12, symbol="circle"),
                         name=etf,
                     ))
-                fig.update_layout(**PLOTLY_BASE, height=200, showlegend=True,
-                                  title=f"{label} — daily consensus",
-                                  title_font=dict(family="Space Mono", size=10, color="#5a6a80"),
-                                  xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
-                                  yaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
-                                  legend=dict(font=dict(family="Space Mono", size=9)))
+                fig.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Space Mono, monospace", color="#5a6a80", size=10),
+                    height=200, showlegend=True,
+                    title=f"{label} — daily consensus",
+                    title_font=dict(family="Space Mono", size=10, color="#5a6a80"),
+                    xaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+                    yaxis=dict(gridcolor="#d1d9e6", showline=False, zeroline=False),
+                    legend=dict(font=dict(family="Space Mono", size=9))
+                )
                 st.plotly_chart(fig, use_container_width=True, key=f"hist_{prefix}", config={"displayModeBar": False})
 
     st.markdown('<div class="sec">Full History Table</div>', unsafe_allow_html=True)
@@ -593,24 +601,37 @@ def render_history(hist_df: pd.DataFrame):
     )
 
 
+# ── Utility formatting functions (unchanged) ─────────────────────────────────
+
+def fmt_pct(v, decimals=1):
+    if v is None: return "—"
+    return f"{v*100:+.{decimals}f}%"
+
+def fmt_f(v, decimals=2):
+    if v is None: return "—"
+    return f"{v:.{decimals}f}"
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    st.markdown("""
-    <div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:1.5rem;">
-      <div style="font-family:var(--mono);font-size:1.25rem;font-weight:700;
-                  letter-spacing:0.06em;color:var(--text);">
-        P2 · ETF · VLSTM · SIGNAL
-      </div>
-      <div style="font-family:var(--mono);font-size:0.80rem;letter-spacing:0.12em;
-                  color:var(--muted);text-transform:uppercase;">
-        VSN + LSTM &nbsp;·&nbsp; Expanding &amp; Shrinking Windows &nbsp;·&nbsp; Display Only
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Sidebar: universe selector
+    st.sidebar.markdown("### ETF Universe")
+    universe_choice = st.sidebar.radio(
+        "Select Universe",
+        options=["fi", "equity"],
+        format_func=lambda x: "FI & Alternatives" if x == "fi" else "US Equity Sectors",
+        index=0,
+    )
 
-    data    = load_data()
-    hist_df = load_history_df()
+    # Load configuration for selected universe
+    config = get_config(universe_choice)
+    target_etfs = config["target_etfs"]
+    universe_name = "FI & Alternatives" if universe_choice == "fi" else "US Equity Sectors"
+
+    # Load data for this universe
+    data = load_data(universe_choice)
+    hist_df = load_history_df(universe_choice)
 
     run_date     = data.get("run_date",     "—") if data else "—"
     data_through = data.get("data_through", "—") if data else "—"
@@ -622,11 +643,30 @@ def main():
     status_msg   = (f"Last run: {run_date} &nbsp;·&nbsp; Data through: {data_through}"
                     if status_ok else "No data — check HF_TOKEN environment variable")
 
+    # Main header with universe indication
     st.markdown(f"""
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.5rem;">
+      <div style="display:flex;align-items:baseline;gap:1rem;">
+        <div style="font-family:var(--mono);font-size:1.25rem;font-weight:700;
+                    letter-spacing:0.06em;color:var(--text);">
+          P2 · ETF · VLSTM · SIGNAL
+        </div>
+        <div style="background:var(--bg2);border-radius:20px;padding:0.2rem 0.8rem;
+                    font-family:var(--mono);font-size:0.75rem;letter-spacing:0.08em;
+                    color:var(--accent);border:1px solid var(--border);">
+          {universe_name}
+        </div>
+      </div>
+      <div style="font-family:var(--mono);font-size:0.80rem;letter-spacing:0.12em;
+                  color:var(--muted);text-transform:uppercase;">
+        VSN + LSTM &nbsp;·&nbsp; Expanding & Shrinking Windows
+      </div>
+    </div>
     <div style="font-family:var(--mono);font-size:0.82rem;color:{status_color};
                 margin-bottom:1.5rem;letter-spacing:0.08em;">
       <span class="dot-live" style="background:{status_color};"></span>{status_msg}
-    </div>""", unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
     tab_exp, tab_shr, tab_hist = st.tabs([
         "📈  EXPANDING STREAM",
@@ -635,13 +675,13 @@ def main():
     ])
 
     with tab_exp:
-        render_stream(exp_data, "Expanding Stream", data_through)
+        render_stream(exp_data, "Expanding Stream", data_through, target_etfs)
 
     with tab_shr:
-        render_stream(shr_data, "Shrinking Stream", data_through)
+        render_stream(shr_data, "Shrinking Stream", data_through, target_etfs)
 
     with tab_hist:
-        render_history(hist_df)
+        render_history(hist_df, target_etfs)
 
 
 if __name__ == "__main__":
