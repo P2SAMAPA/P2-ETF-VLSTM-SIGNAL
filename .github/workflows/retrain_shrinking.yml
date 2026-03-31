@@ -7,11 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       universe:
-        description: 'ETF universe (fi or equity)'
+        description: 'ETF universe (fi, equity, or both)'
         required: false
-        default: 'fi'
+        default: 'both'
         type: choice
         options:
+          - both
           - fi
           - equity
       force:
@@ -31,7 +32,7 @@ jobs:
   train_shrinking_fi:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.universe == 'fi') }}
+    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.universe == 'fi' || github.event.inputs.universe == 'both')) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +42,7 @@ jobs:
           cache: 'pip'
       - run: pip install -r requirements.txt
 
-      - name: Check if already ran today
+      - name: Check if already ran today (FI)
         if: ${{ github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -60,7 +61,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ "${{ github.event.inputs.benchmark }}" = "true" ]; then
-            echo "🔬 Running benchmark mode (FI)..."
+            echo "🔬 Benchmark mode (FI)..."
             python train.py --universe fi --benchmark --epochs ${{ github.event.inputs.epochs || '80' }}
           else
             echo "📉 Training shrinking stream (FI)..."
@@ -79,7 +80,7 @@ jobs:
   train_shrinking_equity:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.universe == 'equity') }}
+    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.universe == 'equity' || github.event.inputs.universe == 'both')) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +90,7 @@ jobs:
           cache: 'pip'
       - run: pip install -r requirements.txt
 
-      - name: Check if already ran today
+      - name: Check if already ran today (Equity)
         if: ${{ github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -108,7 +109,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ "${{ github.event.inputs.benchmark }}" = "true" ]; then
-            echo "🔬 Running benchmark mode (Equity)..."
+            echo "🔬 Benchmark mode (Equity)..."
             python train.py --universe equity --benchmark --epochs ${{ github.event.inputs.epochs || '80' }}
           else
             echo "📉 Training shrinking stream (Equity)..."
