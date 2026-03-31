@@ -16,19 +16,18 @@ Option A: ETF-derived features + macro (VIX, DXY, T10Y2Y, TBILL_3M,
 Option B: ETF-derived features only
 
 Target: for each row, which ETF had the highest next-day return
-        (argmax over 1-day forward returns of the 6 target ETFs)
+        (argmax over 1-day forward returns of the target ETFs)
 """
 
 import numpy as np
 import pandas as pd
 from datasets import load_dataset
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── Default (FI) universe – kept for backward compatibility ──────────────────
 
-TARGET_ETFS   = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD"]
-BENCH_COLS    = ["SPY", "AGG"]                          # features, not targets
-MACRO_COLS    = ["VIX", "DXY", "T10Y2Y", "TBILL_3M", "IG_SPREAD", "HY_SPREAD"]
-PRICE_COLS    = TARGET_ETFS + BENCH_COLS                # all price series
+DEFAULT_TARGET_ETFS = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD"]
+DEFAULT_BENCH_COLS  = ["SPY", "AGG"]
+DEFAULT_MACRO_COLS  = ["VIX", "DXY", "T10Y2Y", "TBILL_3M", "IG_SPREAD", "HY_SPREAD"]
 
 RETURN_HORIZONS = [1, 5, 21, 63, 126, 252]             # trading days
 MACD_PAIRS      = [(4, 12), (8, 24), (32, 96)]         # (fast, slow)
@@ -59,10 +58,7 @@ def load_raw(hf_token: str) -> pd.DataFrame:
     df.index.name = "date"
     df = df.sort_index()
 
-    # Keep only columns we know about; drop anything unexpected
-    keep = [c for c in PRICE_COLS + MACRO_COLS if c in df.columns]
-    df = df[keep].copy()
-
+    # Keep all columns; filtering is done later in build_features
     return df
 
 
@@ -138,15 +134,15 @@ def _features_for_ticker(prices: pd.Series, prefix: str) -> pd.DataFrame:
     return pd.DataFrame(cols)
 
 
-# ── Macro normaliser ──────────────────────────────────────────────────────────
+# ── Macro normaliser (macro columns are fixed across universes) ──────────────
 
-def _normalise_macro(df_raw: pd.DataFrame) -> pd.DataFrame:
+def _normalise_macro(df_raw: pd.DataFrame, macro_cols: list) -> pd.DataFrame:
     """
     Z-score normalise each macro column using its own expanding mean/std
     (to avoid lookahead bias).
     Returns a DataFrame of normalised macro columns.
     """
-    macro = df_raw[[c for c in MACRO_COLS if c in df_raw.columns]].copy()
+    macro = df_raw[[c for c in macro_cols if c in df_raw.columns]].copy()
     normed = {}
     for col in macro.columns:
         m   = macro[col].expanding(min_periods=63).mean()
@@ -157,14 +153,14 @@ def _normalise_macro(df_raw: pd.DataFrame) -> pd.DataFrame:
 
 # ── Target builder ────────────────────────────────────────────────────────────
 
-def _build_targets(df_raw: pd.DataFrame) -> pd.DataFrame:
+def _build_targets(df_raw: pd.DataFrame, target_etfs: list) -> tuple:
     """
     For each row t, compute next-day returns for all target ETFs.
     Target label = index of ETF with highest next-day return (argmax).
     Also return the raw next-day return matrix for Sharpe loss training.
     """
     fwd_rets = {}
-    for etf in TARGET_ETFS:
+    for etf in target_etfs:
         if etf in df_raw.columns:
             fwd_rets[etf] = df_raw[etf].pct_change().shift(-1)   # next-day return
 
@@ -182,16 +178,24 @@ def build_features(
     option: str = "A",          # "A" = with macro, "B" = without macro
     start_year: int = 2008,
     end_year:   int = None,     # None = use all available data
+    target_etfs: list = None,   # NEW: dynamic target ETFs (default = FI)
+    feature_tickers: list = None, # NEW: all tickers to compute features for
+    macro_cols: list = None,    # NEW: macro columns (default = DEFAULT_MACRO_COLS)
 ) -> dict:
     """
     Full feature engineering pipeline.
 
     Parameters
     ----------
-    df_raw     : raw DataFrame from load_raw()
-    option     : "A" (Close-derived + macro) or "B" (Close-derived only)
-    start_year : first year to include in training slice
-    end_year   : last year to include (inclusive); None = latest available
+    df_raw         : raw DataFrame from load_raw()
+    option         : "A" (Close-derived + macro) or "B" (Close-derived only)
+    start_year     : first year to include in training slice
+    end_year       : last year to include (inclusive); None = latest available
+    target_etfs    : list of ETF symbols to predict (default: FI list)
+    feature_tickers: list of all tickers to compute close-derived features for
+                     (should include target_etfs + benchmarks, e.g. SPY, AGG)
+                     If None, defaults to target_etfs + DEFAULT_BENCH_COLS
+    macro_cols     : list of macro column names (default: DEFAULT_MACRO_COLS)
 
     Returns
     -------
@@ -206,6 +210,14 @@ def build_features(
     """
     assert option in ("A", "B"), "option must be 'A' or 'B'"
 
+    # Backward compatibility: use default FI universe if not provided
+    if target_etfs is None:
+        target_etfs = DEFAULT_TARGET_ETFS
+    if feature_tickers is None:
+        feature_tickers = target_etfs + DEFAULT_BENCH_COLS
+    if macro_cols is None:
+        macro_cols = DEFAULT_MACRO_COLS
+
     # ── Slice by year ─────────────────────────────────────────────────────────
     df = df_raw[df_raw.index.year >= start_year].copy()
     if end_year is not None:
@@ -217,9 +229,9 @@ def build_features(
             f"Need at least {MIN_ROWS}."
         )
 
-    # ── Build Close-derived features for every price series ──────────────────
+    # ── Build Close-derived features for every ticker in feature_tickers ──────
     feature_frames = []
-    for ticker in PRICE_COLS:
+    for ticker in feature_tickers:
         if ticker in df.columns:
             feature_frames.append(
                 _features_for_ticker(df[ticker], prefix=ticker)
@@ -229,11 +241,11 @@ def build_features(
 
     # ── Optionally add macro ──────────────────────────────────────────────────
     if option == "A":
-        macro_df = _normalise_macro(df)
+        macro_df = _normalise_macro(df, macro_cols)
         feat_df  = pd.concat([feat_df, macro_df], axis=1)
 
     # ── Build targets ─────────────────────────────────────────────────────────
-    fwd_returns, labels = _build_targets(df)
+    fwd_returns, labels = _build_targets(df, target_etfs)
 
     # ── Align all DataFrames on the same index ────────────────────────────────
     combined = feat_df.join(fwd_returns, how="inner").join(labels, how="inner")
@@ -267,12 +279,12 @@ def build_features(
         "y_returns":     y_returns,
         "feature_names": feature_names,
         "dates":         combined.index,
-        "target_etfs":   TARGET_ETFS,
-        "n_etfs":        len(TARGET_ETFS),
+        "target_etfs":   target_etfs,
+        "n_etfs":        len(target_etfs),
     }
 
 
-# ── Window generators ─────────────────────────────────────────────────────────
+# ── Window generators (unchanged, they are independent of ETF lists) ─────────
 
 def expanding_windows(
     first_train_end: int = 2011,
@@ -281,11 +293,7 @@ def expanding_windows(
     step:            int = 3,
 ) -> list:
     """
-    Generates expanding window configs in step-year increments:
-      2008→2011, 2008→2014, 2008→2017, 2008→2020, 2008→2023, 2008→2026
-
-    The final window (data_end_year) is always included even if not on step boundary.
-    Returns list of dicts: {start_year, end_year, label, stream}
+    Generates expanding window configs in step-year increments.
     """
     if data_end_year is None:
         data_end_year = df_raw.index.year.max()
@@ -311,11 +319,7 @@ def shrinking_windows(
     step:          int = 3,
 ) -> list:
     """
-    Generates shrinking window configs in step-year increments:
-      2008→2026, 2011→2026, 2014→2026, 2017→2026, 2020→2026, 2023→2026
-
-    The final window (data_end_year-1 start) is always included.
-    Returns list of dicts: {start_year, end_year, label, stream}
+    Generates shrinking window configs in step-year increments.
     """
     if data_end_year is None:
         data_end_year = df_raw.index.year.max()
@@ -344,7 +348,7 @@ def all_windows(df_raw: pd.DataFrame, step: int = 3) -> list:
     return exp + shr
 
 
-# ── Train/val/test split ──────────────────────────────────────────────────────
+# ── Train/val/test split (unchanged) ─────────────────────────────────────────
 
 def chronological_split(
     X: np.ndarray,
@@ -356,7 +360,6 @@ def chronological_split(
 ) -> dict:
     """
     Strict chronological split — no shuffling.
-    Returns dict of train/val/test arrays.
     """
     n        = len(X)
     t_end    = int(n * train_pct)
@@ -378,14 +381,20 @@ def chronological_split(
     }
 
 
-# ── Dataset summary ───────────────────────────────────────────────────────────
+# ── Dataset summary (updated to accept target_etfs) ──────────────────────────
 
-def dataset_summary(df_raw: pd.DataFrame) -> dict:
+def dataset_summary(df_raw: pd.DataFrame, target_etfs: list = None) -> dict:
+    """
+    Returns summary of available columns in the raw data.
+    If target_etfs is not provided, uses DEFAULT_TARGET_ETFS.
+    """
+    if target_etfs is None:
+        target_etfs = DEFAULT_TARGET_ETFS
     return {
         "rows":       len(df_raw),
         "start_date": str(df_raw.index[0].date()),
         "end_date":   str(df_raw.index[-1].date()),
-        "etfs":       [c for c in TARGET_ETFS if c in df_raw.columns],
-        "macro":      [c for c in MACRO_COLS  if c in df_raw.columns],
-        "benchmarks": [c for c in BENCH_COLS  if c in df_raw.columns],
+        "etfs":       [c for c in target_etfs if c in df_raw.columns],
+        "macro":      [c for c in DEFAULT_MACRO_COLS if c in df_raw.columns],
+        "benchmarks": [c for c in DEFAULT_BENCH_COLS if c in df_raw.columns],
     }
