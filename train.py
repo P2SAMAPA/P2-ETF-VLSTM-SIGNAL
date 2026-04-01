@@ -32,7 +32,7 @@ import pandas as pd
 from loader   import (load_raw, build_features, all_windows,
                       expanding_windows, shrinking_windows,
                       chronological_split, dataset_summary,
-                      DEFAULT_MACRO_COLS)          # <-- import default macro cols
+                      DEFAULT_MACRO_COLS)
 from vlstm    import (train_vlstm, predict, build_sequences,
                       scale_features, find_best_lookback,
                       top_vsn_features, set_seed)
@@ -40,7 +40,7 @@ from backtest import (execute_strategy, generate_live_signal,
                       summarise_window_result, stream_consensus)
 from conviction import compute_conviction
 from writer   import write_stream
-from config   import get_config   # <-- dynamic universe config
+from config   import get_config
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -71,8 +71,8 @@ def train_one_window(
     feat_names_B:    list,
     target_etfs:     list,
     n_etfs:          int,
-    feature_tickers: list,          # <-- NEW: all tickers for close-derived features
-    macro_cols:      list,          # <-- NEW: macro columns (e.g., DEFAULT_MACRO_COLS)
+    feature_tickers: list,
+    macro_cols:      list,
     epochs:          int = EPOCHS,
     verbose:         bool = True,
 ) -> dict:
@@ -86,7 +86,6 @@ def train_one_window(
     all_results = []
 
     for option in OPTIONS:
-        # Build features for this window slice, passing dynamic lists
         try:
             feat = build_features(
                 df_raw, option=option,
@@ -105,9 +104,8 @@ def train_one_window(
         y_returns = feat["y_returns"]
         feat_names= feat["feature_names"]
         dates     = feat["dates"]
-        n_feat    = X.shape[1]        # n_features (same for all ETFs)
+        n_feat    = X.shape[1]
 
-        # Auto-select lookback
         try:
             lookback = find_best_lookback(
                 X, y_labels, y_returns,
@@ -117,12 +115,10 @@ def train_one_window(
         except Exception:
             lookback = 45
 
-        # Build sequences
         X_seq, y_lab, y_ret = build_sequences(X, y_labels, y_returns, lookback)
         if len(X_seq) < 100:
             continue
 
-        # Dates aligned to sequences
         dates_seq = dates[lookback:]
         n         = len(X_seq)
         t_end     = int(n * TRAIN_PCT)
@@ -172,14 +168,12 @@ def train_one_window(
 
             model = train_res["model"]
 
-            # Backtest on test set
             preds, proba, attn = predict(model, X_test_s)
             bt = execute_strategy(
                 preds, proba, y_test_r, dates_test,
                 target_etfs, FEE_BPS,
             )
 
-            # Live signal — use full dataset features for this option
             X_full = X_full_A if option == "A" else X_full_B
             fn     = feat_names_A if option == "A" else feat_names_B
 
@@ -205,29 +199,29 @@ def train_one_window(
     if not all_results:
         return None
 
-    # Pick best by val_sharpe
     best = max(all_results, key=lambda r: r.get("val_sharpe", -999))
-    best["all_models"] = all_results    # keep all 4 for UI
+    best["all_models"] = all_results
     return best
 
 
 # ── Stream training run ───────────────────────────────────────────────────────
 
 def run_stream(
-    stream:      str,          # "expanding" or "shrinking"
+    stream:          str,
     df_raw,
-    hf_token:    str,
-    target_etfs: list,
-    n_etfs:      int,
-    feature_tickers: list,     # <-- NEW
-    output_dataset: str,
-    macro_cols:  list = None,  # <-- NEW (defaults to DEFAULT_MACRO_COLS)
-    epochs:      int = EPOCHS,
+    hf_token:        str,
+    target_etfs:     list,
+    n_etfs:          int,
+    feature_tickers: list,
+    output_dataset:  str,
+    file_prefix:     str = "fi",
+    macro_cols:      list = None,
+    epochs:          int = EPOCHS,
 ):
     """
     Train all windows for one stream only and write its results to HF.
     Called by retrain_expanding.yml and retrain_shrinking.yml in parallel.
-    Writes expanding_latest.json or shrinking_latest.json independently.
+    Writes {prefix}_expanding_latest.json or {prefix}_shrinking_latest.json independently.
     """
     assert stream in ("expanding", "shrinking")
     if macro_cols is None:
@@ -238,6 +232,7 @@ def run_stream(
     print("=" * 60)
     print(f"P2-ETF-VLSTM-SIGNAL  |  {stream.upper()} STREAM")
     print(f"Universe: {target_etfs}")
+    print(f"File prefix: {file_prefix}")
     print("=" * 60)
 
     data_through = str(df_raw.index[-1].date())
@@ -246,7 +241,6 @@ def run_stream(
     print(f"Dataset: {len(df_raw)} rows  "
           f"{df_raw.index[0].date()} → {df_raw.index[-1].date()}")
 
-    # Pre-build full-dataset features for live signal generation
     print("\n📐 Pre-building full-dataset features for live signal...")
     try:
         full_A = build_features(
@@ -274,7 +268,6 @@ def run_stream(
         print(f"  ⚠️  Option B full features failed: {e}")
         X_full_B, fn_B = None, []
 
-    # Generate windows for this stream only
     if stream == "expanding":
         windows = expanding_windows(
             first_train_end=2011, data_end_year=data_end, df_raw=df_raw, step=3
@@ -307,13 +300,11 @@ def run_stream(
     total_elapsed = time.time() - t_global
     print(f"\n⏱️  {stream.capitalize()} training time: {total_elapsed/60:.1f} minutes")
 
-    # Compute consensus
     consensus = stream_consensus(results, target_etfs)
     print(f"\n📊 {stream.capitalize()} consensus: {consensus.get('signal')} "
           f"({consensus.get('strength')})")
 
-    # Write to HF using the universe‑specific dataset name
-    print(f"\n📤 Writing {stream}_latest.json to {output_dataset}...")
+    print(f"\n📤 Writing {file_prefix}_{stream}_latest.json to {output_dataset}...")
     write_stream(
         stream       = stream,
         results      = results,
@@ -321,6 +312,7 @@ def run_stream(
         data_through = data_through,
         hf_token     = hf_token,
         dataset_name = output_dataset,
+        file_prefix  = file_prefix,
     )
 
     print("\n✅ Done.")
@@ -426,12 +418,11 @@ def run_benchmark(df_raw, target_etfs, n_etfs, feature_tickers, macro_cols,
                 elapsed = time.time() - t0
                 print(f"FAILED ({e})")
 
-    # ── Extrapolation ─────────────────────────────────────────────────────────
     if timings:
         per_window = sum(timings.values())
         data_end   = df_raw.index.year.max()
-        n_exp      = data_end - 2010 + 1     # expanding windows
-        n_shr      = data_end - 2008         # shrinking windows
+        n_exp      = data_end - 2010 + 1
+        n_shr      = data_end - 2008
         total_windows = n_exp + n_shr
         total_est     = per_window * total_windows
 
@@ -478,21 +469,22 @@ def main():
         print("❌ HF_TOKEN environment variable not set.")
         sys.exit(1)
 
-    # Load universe configuration
     config = get_config(args.universe)
     target_etfs = config["target_etfs"]
     n_etfs = config["n_etfs"]
-    feature_tickers = config["feature_tickers"]   # <-- get from config
+    feature_tickers = config["feature_tickers"]
     output_dataset = config["output_dataset"]
+    file_prefix = config.get("file_prefix", "fi")
 
     print(f"\n🌍 Using universe: {args.universe}")
     print(f"   Target ETFs: {target_etfs}")
     print(f"   Feature tickers: {feature_tickers}")
-    print(f"   Output dataset: {output_dataset}\n")
+    print(f"   Output dataset: {output_dataset}")
+    print(f"   File prefix: {file_prefix}\n")
 
     print("📡 Loading dataset from HuggingFace...")
     df_raw = load_raw(hf_token)
-    summary = dataset_summary(df_raw, target_etfs=target_etfs)  # <-- pass target_etfs
+    summary = dataset_summary(df_raw, target_etfs=target_etfs)
     print(f"   Rows: {summary['rows']:,}  |  "
           f"{summary['start_date']} → {summary['end_date']}")
     print(f"   ETFs: {summary['etfs']}")
@@ -502,18 +494,16 @@ def main():
         run_benchmark(df_raw, target_etfs, n_etfs, feature_tickers,
                       DEFAULT_MACRO_COLS, epochs=args.epochs)
     elif args.stream == "both":
-        # Sequential fallback — used if running locally or with single yml
         run_stream("expanding", df_raw, hf_token,
                    target_etfs, n_etfs, feature_tickers,
-                   output_dataset, DEFAULT_MACRO_COLS, epochs=args.epochs)
+                   output_dataset, file_prefix, DEFAULT_MACRO_COLS, epochs=args.epochs)
         run_stream("shrinking", df_raw, hf_token,
                    target_etfs, n_etfs, feature_tickers,
-                   output_dataset, DEFAULT_MACRO_COLS, epochs=args.epochs)
+                   output_dataset, file_prefix, DEFAULT_MACRO_COLS, epochs=args.epochs)
     else:
-        # Single stream — called by retrain_expanding.yml / retrain_shrinking.yml
         run_stream(args.stream, df_raw, hf_token,
                    target_etfs, n_etfs, feature_tickers,
-                   output_dataset, DEFAULT_MACRO_COLS, epochs=args.epochs)
+                   output_dataset, file_prefix, DEFAULT_MACRO_COLS, epochs=args.epochs)
 
 
 if __name__ == "__main__":
