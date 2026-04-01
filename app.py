@@ -213,10 +213,12 @@ def load_data(universe: str) -> dict:
     hf_token = os.getenv("HF_TOKEN", "")
     if not hf_token:
         return {}
-    dataset_name = UNIVERSE_CONFIG[universe]['output_dataset']
+    config = UNIVERSE_CONFIG[universe]
+    dataset_name = config['output_dataset']
+    file_prefix = config.get('file_prefix', 'fi')  # NEW: Get prefix from config
     try:
         from writer import load_latest
-        return load_latest(hf_token, dataset_name=dataset_name)
+        return load_latest(hf_token, dataset_name=dataset_name, file_prefix=file_prefix)  # NEW: Pass prefix
     except Exception as e:
         st.error(f"Could not load data for {universe}: {e}")
         return {}
@@ -227,10 +229,12 @@ def load_history_df(universe: str) -> pd.DataFrame:
     hf_token = os.getenv("HF_TOKEN", "")
     if not hf_token:
         return pd.DataFrame()
-    dataset_name = UNIVERSE_CONFIG[universe]['output_dataset']
+    config = UNIVERSE_CONFIG[universe]
+    dataset_name = config['output_dataset']
+    file_prefix = config.get('file_prefix', 'fi')  # NEW: Get prefix from config
     try:
         from writer import load_history
-        return load_history(hf_token, dataset_name=dataset_name)
+        return load_history(hf_token, dataset_name=dataset_name, file_prefix=file_prefix)  # NEW: Pass prefix
     except Exception:
         return pd.DataFrame()
 
