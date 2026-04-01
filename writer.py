@@ -3,9 +3,7 @@ writer.py
 P2-ETF-VLSTM-SIGNAL
 
 Writes training results to HuggingFace output dataset.
-Two separate files per stream:
-  expanding_latest.json   → written by retrain_expanding.yml
-  shrinking_latest.json   → written by retrain_shrinking.yml
+Supports prefixed filenames for multiple universes (fi, equity) in same dataset.
 """
 
 import io
@@ -16,28 +14,24 @@ from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
 
-
 # Default dataset (FI universe) – kept for backward compatibility
 DEFAULT_DATASET = "P2SAMAPA/p2-etf-vlstm-outputs"
 
 # Keys that contain non-serialisable objects or circular refs — always strip
 _STRIP_KEYS = {"equity", "daily_rets", "etf_held", "dates", "all_models"}
 
-
 # ── JSON serialiser ───────────────────────────────────────────────────────────
 
 class _NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, np.integer):   return int(obj)
-        if isinstance(obj, np.floating):  return float(obj) if not np.isnan(obj) else None
-        if isinstance(obj, np.ndarray):   return obj.tolist()
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj) if not np.isnan(obj) else None
+        if isinstance(obj, np.ndarray): return obj.tolist()
         if isinstance(obj, pd.Timestamp): return str(obj.date())
         return super().default(obj)
 
-
 def _serialise(obj) -> str:
     return json.dumps(obj, cls=_NumpyEncoder, indent=2)
-
 
 # ── Result sanitiser — iterative, no recursion ────────────────────────────────
 
@@ -52,7 +46,6 @@ def _sanitise(r: dict) -> dict:
             return None
         if isinstance(v, np.ndarray):
             arr = v.tolist()
-            # Replace nan/inf in lists
             return _clean_list(arr)
         if isinstance(v, float):
             if np.isnan(v) or np.isinf(v):
@@ -85,28 +78,28 @@ def _sanitise(r: dict) -> dict:
 
     return _clean_dict(r)
 
-
 # ── Stream writer ─────────────────────────────────────────────────────────────
 
 def write_stream(
-    stream:       str,
-    results:      list,
-    consensus:    dict,
+    stream: str,
+    results: list,
+    consensus: dict,
     data_through: str,
-    hf_token:     str,
-    dataset_name: str = DEFAULT_DATASET,   # <-- NEW: dynamic dataset
+    hf_token: str,
+    dataset_name: str = DEFAULT_DATASET,
+    file_prefix: str = "fi",  # NEW: prefix for filenames (fi_ or equity_)
 ) -> bool:
     """
     Write one stream's results to its own file on HuggingFace.
-    expanding → expanding_latest.json
-    shrinking → shrinking_latest.json
+    expanding → {prefix}_expanding_latest.json
+    shrinking → {prefix}_shrinking_latest.json
     """
     assert stream in ("expanding", "shrinking")
 
     try:
         from huggingface_hub import HfApi
-        api      = HfApi(token=hf_token)
-        est_now  = datetime.now(timezone.utc) - timedelta(hours=5)
+        api = HfApi(token=hf_token)
+        est_now = datetime.now(timezone.utc) - timedelta(hours=5)
         run_date = est_now.strftime("%Y-%m-%d")
 
         # Sanitise all window results
@@ -117,17 +110,18 @@ def write_stream(
             try:
                 clean_windows.append(_sanitise(r))
             except Exception as e:
-                print(f"  ⚠️  Could not sanitise window result: {e}")
+                print(f" ⚠️ Could not sanitise window result: {e}")
 
         payload = {
-            "stream":       stream,
-            "run_date":     run_date,
+            "stream": stream,
+            "run_date": run_date,
             "data_through": data_through,
-            "consensus":    consensus,
-            "windows":      clean_windows,
+            "consensus": consensus,
+            "windows": clean_windows,
         }
 
-        filename = f"{stream}_latest.json"
+        # PREFIXED filename: fi_expanding_latest.json or equity_expanding_latest.json
+        filename = f"{file_prefix}_{stream}_latest.json"
 
         # Verify serialisable before uploading
         json_bytes = _serialise(payload).encode()
@@ -135,13 +129,12 @@ def write_stream(
         api.upload_file(
             path_or_fileobj=io.BytesIO(json_bytes),
             path_in_repo=filename,
-            repo_id=dataset_name,          # <-- use dynamic dataset
+            repo_id=dataset_name,
             repo_type="dataset",
             commit_message=f"[{stream}] Update signals — {run_date}",
         )
 
-        _append_history(api, run_date, data_through, stream, consensus,
-                        dataset_name)      # <-- pass dataset name
+        _append_history(api, run_date, data_through, stream, consensus, dataset_name, file_prefix)
 
         print(f"✅ {filename} written to {dataset_name} for {run_date}")
         return True
@@ -151,24 +144,25 @@ def write_stream(
         traceback.print_exc()
         return False
 
-
 # ── History appender ──────────────────────────────────────────────────────────
 
-def _append_history(api, run_date, data_through, stream, consensus,
-                    dataset_name: str):
-    prefix  = "exp" if stream == "expanding" else "shr"
+def _append_history(api, run_date, data_through, stream, consensus, dataset_name: str, file_prefix: str = "fi"):
+    prefix = "exp" if stream == "expanding" else "shr"
     new_row = {
-        "run_date":            run_date,
-        "data_through":        data_through,
-        f"{prefix}_signal":    consensus.get("signal", ""),
-        f"{prefix}_strength":  consensus.get("strength", ""),
+        "run_date": run_date,
+        "data_through": data_through,
+        f"{prefix}_signal": consensus.get("signal", ""),
+        f"{prefix}_strength": consensus.get("strength", ""),
         f"{prefix}_score_pct": consensus.get("score_pct", 0),
     }
 
+    # PREFIXED history filename: fi_history.parquet or equity_history.parquet
+    history_file = f"{file_prefix}_history.parquet"
+    
     try:
         from huggingface_hub import hf_hub_download
-        local    = hf_hub_download(
-            repo_id=dataset_name, filename="history.parquet",
+        local = hf_hub_download(
+            repo_id=dataset_name, filename=history_file,
             repo_type="dataset", token=api.token, force_download=True,
         )
         existing = pd.read_parquet(local)
@@ -177,8 +171,7 @@ def _append_history(api, run_date, data_through, stream, consensus,
                 existing.loc[existing["run_date"] == run_date, col] = val
             combined = existing
         else:
-            combined = pd.concat([existing, pd.DataFrame([new_row])],
-                                 ignore_index=True)
+            combined = pd.concat([existing, pd.DataFrame([new_row])], ignore_index=True)
     except Exception:
         combined = pd.DataFrame([new_row])
 
@@ -187,19 +180,18 @@ def _append_history(api, run_date, data_through, stream, consensus,
     buf.seek(0)
     api.upload_file(
         path_or_fileobj=buf,
-        path_in_repo="history.parquet",
+        path_in_repo=history_file,
         repo_id=dataset_name,
         repo_type="dataset",
         commit_message=f"[{stream}] Append history — {run_date}",
     )
 
-
 # ── Readers (used by Streamlit) ───────────────────────────────────────────────
 
-def load_stream(stream: str, hf_token: str, dataset_name: str = DEFAULT_DATASET) -> dict:
+def load_stream(stream: str, hf_token: str, dataset_name: str = DEFAULT_DATASET, file_prefix: str = "fi") -> dict:
     """Load the latest JSON file for a given stream from the specified dataset."""
     assert stream in ("expanding", "shrinking")
-    filename = f"{stream}_latest.json"
+    filename = f"{file_prefix}_{stream}_latest.json"  # prefixed
     try:
         from huggingface_hub import hf_hub_download
         local = hf_hub_download(
@@ -209,49 +201,44 @@ def load_stream(stream: str, hf_token: str, dataset_name: str = DEFAULT_DATASET)
         with open(local) as f:
             return json.load(f)
     except Exception as e:
-        print(f"⚠️  Could not load {filename} from {dataset_name}: {e}")
+        print(f"⚠️ Could not load {filename} from {dataset_name}: {e}")
         return {}
 
-
-def load_history(hf_token: str, dataset_name: str = DEFAULT_DATASET) -> pd.DataFrame:
+def load_history(hf_token: str, dataset_name: str = DEFAULT_DATASET, file_prefix: str = "fi") -> pd.DataFrame:
     """Load the history.parquet file from the specified dataset."""
+    filename = f"{file_prefix}_history.parquet"  # prefixed
     try:
         from huggingface_hub import hf_hub_download
         local = hf_hub_download(
-            repo_id=dataset_name, filename="history.parquet",
+            repo_id=dataset_name, filename=filename,
             repo_type="dataset", token=hf_token, force_download=True,
         )
         return pd.read_parquet(local)
     except Exception as e:
-        print(f"⚠️  Could not load history.parquet from {dataset_name}: {e}")
+        print(f"⚠️ Could not load {filename} from {dataset_name}: {e}")
         return pd.DataFrame()
 
-
-def load_latest(hf_token: str, dataset_name: str = DEFAULT_DATASET) -> dict:
+def load_latest(hf_token: str, dataset_name: str = DEFAULT_DATASET, file_prefix: str = "fi") -> dict:
     """
     Assembles both stream files into a single dict for app.py.
-    If dataset_name is provided, it loads from that dataset; otherwise uses default.
-    FIXED: Now properly handles cases where only one stream has data.
+    Uses file_prefix to load correct universe files.
     """
-    exp = load_stream("expanding", hf_token, dataset_name)
-    shr = load_stream("shrinking", hf_token, dataset_name)
-    
-    # Check if we have data from at least one stream (check if dict is truthy/non-empty)
+    exp = load_stream("expanding", hf_token, dataset_name, file_prefix)
+    shr = load_stream("shrinking", hf_token, dataset_name, file_prefix)
+
     has_exp = bool(exp)
     has_shr = bool(shr)
-    
+
     if not has_exp and not has_shr:
         return {}
-    
-    # Use whichever stream has data to get run_date and data_through
-    # Priority: expanding > shrinking
+
     source = exp if has_exp else shr
-    
+
     return {
-        "run_date":     source.get("run_date", "—"),
+        "run_date": source.get("run_date", "—"),
         "data_through": source.get("data_through", "—"),
-        "expanding":    {"consensus": exp.get("consensus", {}) if has_exp else {},
-                         "windows":   exp.get("windows", []) if has_exp else []},
-        "shrinking":    {"consensus": shr.get("consensus", {}) if has_shr else {},
-                         "windows":   shr.get("windows", []) if has_shr else []},
+        "expanding": {"consensus": exp.get("consensus", {}) if has_exp else {},
+                      "windows": exp.get("windows", []) if has_exp else []},
+        "shrinking": {"consensus": shr.get("consensus", {}) if has_shr else {},
+                      "windows": shr.get("windows", []) if has_shr else []},
     }
