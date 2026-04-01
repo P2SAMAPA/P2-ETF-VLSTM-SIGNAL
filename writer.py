@@ -231,16 +231,27 @@ def load_latest(hf_token: str, dataset_name: str = DEFAULT_DATASET) -> dict:
     """
     Assembles both stream files into a single dict for app.py.
     If dataset_name is provided, it loads from that dataset; otherwise uses default.
+    FIXED: Now properly handles cases where only one stream has data.
     """
     exp = load_stream("expanding", hf_token, dataset_name)
     shr = load_stream("shrinking", hf_token, dataset_name)
-    if not exp and not shr:
+    
+    # Check if we have data from at least one stream (check if dict is truthy/non-empty)
+    has_exp = bool(exp)
+    has_shr = bool(shr)
+    
+    if not has_exp and not has_shr:
         return {}
+    
+    # Use whichever stream has data to get run_date and data_through
+    # Priority: expanding > shrinking
+    source = exp if has_exp else shr
+    
     return {
-        "run_date":     (exp or shr).get("run_date", "—"),
-        "data_through": (exp or shr).get("data_through", "—"),
-        "expanding":    {"consensus": exp.get("consensus", {}),
-                         "windows":   exp.get("windows", [])},
-        "shrinking":    {"consensus": shr.get("consensus", {}),
-                         "windows":   shr.get("windows", [])},
+        "run_date":     source.get("run_date", "—"),
+        "data_through": source.get("data_through", "—"),
+        "expanding":    {"consensus": exp.get("consensus", {}) if has_exp else {},
+                         "windows":   exp.get("windows", []) if has_exp else []},
+        "shrinking":    {"consensus": shr.get("consensus", {}) if has_shr else {},
+                         "windows":   shr.get("windows", []) if has_shr else []},
     }
