@@ -3,7 +3,7 @@ loader.py
 P2-ETF-VLSTM-SIGNAL
 
 Data loading and feature engineering.
-FIXED: Added load_raw_from_dataset() to support different input datasets per universe.
+FIXED: Uses input_filename from config to support master_data.parquet
 """
 
 import numpy as np
@@ -14,16 +14,16 @@ from huggingface_hub import hf_hub_download
 DEFAULT_MACRO_COLS = ["VIX", "DXY", "T10Y2Y", "TBILL_3M", "IG_SPREAD", "HY_SPREAD"]
 
 
-def load_raw_from_dataset(dataset_name: str, hf_token: str) -> pd.DataFrame:
+def load_raw_from_dataset(dataset_name: str, hf_token: str, filename: str = "master_data.parquet") -> pd.DataFrame:
     """
     Load raw data from specified HuggingFace dataset.
 
-    NEW: Supports different input datasets for FI and Equity universes.
+    FIXED: Now accepts filename parameter to handle master_data.parquet
     """
     try:
         local = hf_hub_download(
             repo_id=dataset_name,
-            filename="data.parquet",
+            filename=filename,
             repo_type="dataset",
             token=hf_token,
         )
@@ -38,7 +38,7 @@ def load_raw_from_dataset(dataset_name: str, hf_token: str) -> pd.DataFrame:
 
         return df.sort_index()
     except Exception as e:
-        raise ValueError(f"Failed to load dataset {dataset_name}: {e}")
+        raise ValueError(f"Failed to load dataset {dataset_name}/{filename}: {e}")
 
 
 def load_raw(hf_token: str, dataset_name: str = "P2SAMAPA/fi-etf-macro-signal-master-data") -> pd.DataFrame:
@@ -46,7 +46,7 @@ def load_raw(hf_token: str, dataset_name: str = "P2SAMAPA/fi-etf-macro-signal-ma
     Legacy function - loads FI dataset by default.
     Use load_raw_from_dataset() for new code.
     """
-    return load_raw_from_dataset(dataset_name, hf_token)
+    return load_raw_from_dataset(dataset_name, hf_token, filename="master_data.parquet")
 
 
 def dataset_summary(df: pd.DataFrame, target_etfs: List[str]) -> dict:
@@ -150,7 +150,7 @@ def build_features(df_raw: pd.DataFrame,
     for etf in target_etfs:
         close_col = f"{etf}_close"
         if close_col not in df.columns:
-            raise ValueError(f"Target ETF {etf} not found in dataset")
+            raise ValueError(f"Target ETF {etf} not found in dataset (looking for {close_col})")
 
         next_ret = df[close_col].pct_change(1).shift(-1)
         y_returns.append(next_ret.values)
