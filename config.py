@@ -1,20 +1,15 @@
 """
 config.py
 P2-ETF-VLSTM-SIGNAL
-
-Universe configurations for FI (Fixed Income) and Equity ETF sets.
-Both universes use the same input dataset (contains all ETF columns).
 """
 
-# ── FI Universe (Fixed Income + Commodities) ─────────────────────────────────
+# FI Universe (Fixed Income + Commodities)
 FI_ETFS = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD"]
 FI_FEATURE_TICKERS = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD", "SPY", "AGG"]
 
-# ── Equity Universe (Sectors + Gold Miners) ──────────────────────────────────
+# Equity Universe (Sectors + Gold Miners) - Your 10 ETFs
 EQUITY_ETFS = ["GDX", "XLV", "XLY", "XLK", "XLE", "XLP", "XLU", "XME", "XLF", "XLI"]
 EQUITY_FEATURE_TICKERS = ["GDX", "XLV", "XLY", "XLK", "XLE", "XLP", "XLU", "XME", "XLF", "XLI", "SPY", "QQQ"]
-
-# ── Universe Configurations ───────────────────────────────────────────────────
 
 UNIVERSES = {
     "fi": {
@@ -37,12 +32,10 @@ UNIVERSES = {
     },
 }
 
-# Alias for backward compatibility with app.py
+# Alias for app.py compatibility
 UNIVERSE_CONFIG = UNIVERSES
 
-
 def get_config(universe: str):
-    """Get configuration for specified universe."""
     if universe not in UNIVERSES:
-        raise ValueError(f"Unknown universe: {universe}. Choose from: {list(UNIVERSES.keys())}")
+        raise ValueError(f"Unknown universe: {universe}")
     return UNIVERSES[universe]
