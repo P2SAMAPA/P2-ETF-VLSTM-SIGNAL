@@ -2,12 +2,11 @@ name: Daily Retrain - FI Universe (Parallel)
 
 on:
   schedule:
-    # Run at 4:30 PM EST (21:30 UTC) on weekdays
     - cron: '30 21 * * 1-5'
   workflow_dispatch:
     inputs:
       benchmark:
-        description: 'Run benchmark only (no HF write)'
+        description: 'Run benchmark only'
         type: boolean
         default: false
       epochs:
@@ -16,7 +15,6 @@ on:
         default: 80
 
 jobs:
-  # Matrix job: runs expanding and shrinking in parallel
   train-fi-stream:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -35,14 +33,6 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Cache pip packages
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -53,7 +43,6 @@ jobs:
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        echo "🚀 Training FI universe - ${{ matrix.stream }} stream"
         python train.py --universe fi --stream ${{ matrix.stream }} --epochs ${{ inputs.epochs || 80 }}
 
     - name: Benchmark Mode - ${{ matrix.stream }}
@@ -61,7 +50,6 @@ jobs:
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        echo "⏱️ Benchmarking FI universe - ${{ matrix.stream }} stream"
         python train.py --universe fi --stream ${{ matrix.stream }} --benchmark --epochs ${{ inputs.epochs || 80 }}
 
     - name: Verify HF Upload - ${{ matrix.stream }}
@@ -70,31 +58,25 @@ jobs:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
         STREAM: ${{ matrix.stream }}
       run: |
-        python3 << 'EOF'
-        import os
-        from huggingface_hub import HfApi
-        import time
-
-        api = HfApi(token=os.environ['HF_TOKEN'])
-        stream = os.environ['STREAM']
-        expected_file = f'fi_{stream}_latest.json'
-
-        for attempt in range(5):
-            try:
-                files = api.list_repo_files('P2SAMAPA/p2-etf-vlstm-outputs', repo_type='dataset')
-                if expected_file in files:
-                    print(f'✅ {expected_file} found in dataset')
-                    exit(0)
-                else:
-                    print(f'⏳ Attempt {attempt + 1}: {expected_file} not yet visible, waiting...')
-                    time.sleep(2)
-            except Exception as e:
-                print(f'⚠️ Attempt {attempt + 1} failed: {e}')
-                time.sleep(2)
-
-        print(f'❌ Failed to verify {expected_file} after 5 attempts')
-        exit(1)
-        EOF
+        python3 -c "
+import os, time
+from huggingface_hub import HfApi
+api = HfApi(token=os.environ['HF_TOKEN'])
+stream = os.environ['STREAM']
+expected_file = f'fi_{stream}_latest.json'
+for attempt in range(5):
+    try:
+        files = api.list_repo_files('P2SAMAPA/p2-etf-vlstm-outputs', repo_type='dataset')
+        if expected_file in files:
+            print(f'✅ {expected_file} found')
+            exit(0)
+        time.sleep(2)
+    except Exception as e:
+        print(f'⚠️ Attempt {attempt+1}: {e}')
+        time.sleep(2)
+print(f'❌ Failed to verify {expected_file}')
+exit(1)
+"
 
   verify-fi-complete:
     runs-on: ubuntu-latest
@@ -106,23 +88,18 @@ jobs:
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        python3 << 'EOF'
-        from huggingface_hub import HfApi
-        import os
-
-        api = HfApi(token=os.environ['HF_TOKEN'])
-        files = api.list_repo_files('P2SAMAPA/p2-etf-vlstm-outputs', repo_type='dataset')
-
-        required = ['fi_expanding_latest.json', 'fi_shrinking_latest.json']
-        found = [f for f in required if f in files]
-
-        print(f'Found files: {found}')
-
-        if len(found) == 2:
-            print('✅ Both FI streams completed successfully')
-            exit(0)
-        else:
-            missing = [f for f in required if f not in files]
-            print(f'❌ Missing files: {missing}')
-            exit(1)
-        EOF
+        python3 -c "
+from huggingface_hub import HfApi
+import os
+api = HfApi(token=os.environ['HF_TOKEN'])
+files = api.list_repo_files('P2SAMAPA/p2-etf-vlstm-outputs', repo_type='dataset')
+required = ['fi_expanding_latest.json', 'fi_shrinking_latest.json']
+found = [f for f in required if f in files]
+print(f'Found: {found}')
+if len(found) == 2:
+    print('✅ Both FI streams completed')
+    exit(0)
+else:
+    print(f'❌ Missing: {[f for f in required if f not in files]}')
+    exit(1)
+"
