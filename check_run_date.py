@@ -4,7 +4,6 @@ P2-ETF-VLSTM-SIGNAL
 
 Checks if this stream already ran today (EST) for a specific universe.
 Always exits 0 — result communicated via stdout for the yml to capture.
-
 Prints either:
   ALREADY_RAN_TODAY
   PROCEED
@@ -19,13 +18,14 @@ import argparse
 import os
 from datetime import datetime, timezone, timedelta
 
-# Import config to get dataset names per universe
 try:
     from config import get_config
 except ImportError:
-    # Fallback if config.py doesn't exist (old code) – use default dataset
     def get_config(universe):
-        return {"output_dataset": "P2SAMAPA/p2-etf-vlstm-outputs"}
+        return {
+            "output_dataset": "P2SAMAPA/p2-etf-vlstm-outputs",
+            "file_prefix": "fi",
+        }
 
 
 def main():
@@ -42,13 +42,18 @@ def main():
         print("PROCEED")
         return
 
-    # Get dataset name for this universe
-    config = get_config(args.universe)
+    config       = get_config(args.universe)
     dataset_name = config.get("output_dataset", "P2SAMAPA/p2-etf-vlstm-outputs")
+    file_prefix  = config.get("file_prefix", args.universe)   # FIX: was missing entirely
 
     est_now  = datetime.now(timezone.utc) - timedelta(hours=5)
     today    = est_now.strftime("%Y-%m-%d")
-    filename = f"{args.stream}_latest.json"
+
+    # FIX: was f"{args.stream}_latest.json" — missing the prefix, so it was
+    # looking for "expanding_latest.json" instead of "fi_expanding_latest.json".
+    # That caused an exception → always printed PROCEED (harmless but wrong).
+    # Now correctly matches what writer.py actually uploads.
+    filename = f"{file_prefix}_{args.stream}_latest.json"
 
     try:
         from huggingface_hub import hf_hub_download
@@ -65,14 +70,13 @@ def main():
             data = json.load(f)
 
         last_run = data.get("run_date", "")
-
         if last_run == today:
             print("ALREADY_RAN_TODAY")
         else:
             print("PROCEED")
 
     except Exception:
-        # File doesn't exist yet or any error → proceed
+        # File doesn't exist yet or any error → always proceed
         print("PROCEED")
 
 
