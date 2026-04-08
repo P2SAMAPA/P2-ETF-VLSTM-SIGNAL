@@ -3,24 +3,7 @@ train.py
 P2-ETF-VLSTM-SIGNAL
 
 Main training script — runs in GitHub Actions daily after market close.
-FIXED: Properly passes target_etfs to writer for schema validation.
-
-Flow:
- 1. Load data from HF
- 2. For each window in expanding + shrinking streams:
-    For each option (A, B) × loss_mode (ce, sharpe) → 4 models per window:
-      a. Build features
-      b. Find best lookback (30/45/60d)
-      c. Train VLSTM
-      d. Backtest on test slice
-      e. Generate live next-day signal (today)
-      f. Pick best of 4 models by val_sharpe
- 3. Compute stream consensus (expanding / shrinking)
- 4. Write outputs to HF dataset with proper schema
-
-Benchmark mode (--benchmark):
-  Trains a single window with all 4 models, reports timing,
-  extrapolates to full run. Use this first to assess compute cost.
+FIXED: Uses input_filename from config to load master_data.parquet
 """
 
 import os
@@ -30,7 +13,7 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from loader import (load_raw, build_features, all_windows,
+from loader import (load_raw_from_dataset, build_features, all_windows,
                    expanding_windows, shrinking_windows,
                    chronological_split, dataset_summary,
                    DEFAULT_MACRO_COLS)
@@ -218,10 +201,6 @@ def run_stream(
 ):
     """
     Train all windows for one stream only and write its results to HF.
-    Called by GitHub Actions workflows.
-    Writes {prefix}_expanding_latest.json or {prefix}_shrinking_latest.json independently.
-
-    FIXED: Now passes target_etfs to write_stream for proper schema validation.
     """
     assert stream in ("expanding", "shrinking")
     if macro_cols is None:
@@ -306,7 +285,6 @@ def run_stream(
 
     print(f"\n📤 Writing {file_prefix}_{stream}_latest.json to {output_dataset}...")
 
-    # FIX: Pass target_etfs to write_stream for proper schema validation
     ok = write_stream(
         stream = stream,
         results = results,
@@ -315,7 +293,7 @@ def run_stream(
         hf_token = hf_token,
         dataset_name = output_dataset,
         file_prefix = file_prefix,
-        target_etfs = target_etfs,  # NEW: Pass ETF list for schema validation
+        target_etfs = target_etfs,
     )
 
     if not ok:
@@ -481,18 +459,19 @@ def main():
     output_dataset = config["output_dataset"]
     file_prefix = config.get("file_prefix", "fi")
     input_dataset = config.get("input_dataset", "P2SAMAPA/fi-etf-macro-signal-master-data")
+    input_filename = config.get("input_filename", "master_data.parquet")  # FIXED
 
     print(f"\n🌍 Using universe: {args.universe}")
     print(f" Target ETFs: {target_etfs}")
     print(f" Feature tickers: {feature_tickers}")
     print(f" Output dataset: {output_dataset}")
     print(f" File prefix: {file_prefix}")
-    print(f" Input dataset: {input_dataset}\n")
+    print(f" Input dataset: {input_dataset}")
+    print(f" Input filename: {input_filename}\n")
 
     print("📡 Loading dataset from HuggingFace...")
-    # FIX: Use the correct input dataset for the universe
-    from loader import load_raw_from_dataset
-    df_raw = load_raw_from_dataset(input_dataset, hf_token)
+    # FIXED: Pass the correct filename from config
+    df_raw = load_raw_from_dataset(input_dataset, hf_token, filename=input_filename)
 
     summary = dataset_summary(df_raw, target_etfs=target_etfs)
     print(f" Rows: {summary['rows']:,} | "
