@@ -305,7 +305,11 @@ def run_stream(
           f"({consensus.get('strength')})")
 
     print(f"\n📤 Writing {file_prefix}_{stream}_latest.json to {output_dataset}...")
-    write_stream(
+
+    # FIX: check the return value and exit non-zero on failure.
+    # Previously write_stream() failures were silently swallowed — the job
+    # exited 0 (green tick) even though nothing was uploaded to HF.
+    ok = write_stream(
         stream       = stream,
         results      = results,
         consensus    = consensus,
@@ -314,6 +318,10 @@ def run_stream(
         dataset_name = output_dataset,
         file_prefix  = file_prefix,
     )
+
+    if not ok:
+        print(f"❌ Upload failed for {stream} stream — exiting with code 1")
+        sys.exit(1)   # makes GitHub Actions step go RED instead of silent green
 
     print("\n✅ Done.")
     return total_elapsed
@@ -470,11 +478,11 @@ def main():
         sys.exit(1)
 
     config = get_config(args.universe)
-    target_etfs = config["target_etfs"]
-    n_etfs = config["n_etfs"]
+    target_etfs     = config["target_etfs"]
+    n_etfs          = config["n_etfs"]
     feature_tickers = config["feature_tickers"]
-    output_dataset = config["output_dataset"]
-    file_prefix = config.get("file_prefix", "fi")
+    output_dataset  = config["output_dataset"]
+    file_prefix     = config.get("file_prefix", "fi")
 
     print(f"\n🌍 Using universe: {args.universe}")
     print(f"   Target ETFs: {target_etfs}")
@@ -483,7 +491,7 @@ def main():
     print(f"   File prefix: {file_prefix}\n")
 
     print("📡 Loading dataset from HuggingFace...")
-    df_raw = load_raw(hf_token)
+    df_raw  = load_raw(hf_token)
     summary = dataset_summary(df_raw, target_etfs=target_etfs)
     print(f"   Rows: {summary['rows']:,}  |  "
           f"{summary['start_date']} → {summary['end_date']}")
