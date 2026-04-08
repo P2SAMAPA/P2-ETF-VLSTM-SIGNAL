@@ -2,399 +2,233 @@
 loader.py
 P2-ETF-VLSTM-SIGNAL
 
-Loads master_data.parquet from HuggingFace dataset and computes all derived
-features following the Oxford paper (Saly-Kaufmann et al. 2026):
-
-Feature engineering per ETF (Close-derived):
-  - Normalised returns: 1d, 5d, 21d, 63d, 126d, 252d  (vol-scaled)
-  - MACD signals:       (4,12), (8,24), (32,96)        (double-normalised)
-  - EWMA volatility:    span=63
-  - Vol-scaling factor: 1/sigma
-
-Option A: ETF-derived features + macro (VIX, DXY, T10Y2Y, TBILL_3M,
-                                         IG_SPREAD, HY_SPREAD)
-Option B: ETF-derived features only
-
-Target: for each row, which ETF had the highest next-day return
-        (argmax over 1-day forward returns of the target ETFs)
+Data loading and feature engineering.
+FIXED: Added load_raw_from_dataset() to support different input datasets per universe.
 """
 
 import numpy as np
 import pandas as pd
-from datasets import load_dataset
+from typing import List, Tuple, Optional
+from huggingface_hub import hf_hub_download
 
-# ── Default (FI) universe – kept for backward compatibility ──────────────────
-
-DEFAULT_TARGET_ETFS = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD"]
-DEFAULT_BENCH_COLS  = ["SPY", "AGG"]
-DEFAULT_MACRO_COLS  = ["VIX", "DXY", "T10Y2Y", "TBILL_3M", "IG_SPREAD", "HY_SPREAD"]
-
-RETURN_HORIZONS = [1, 5, 21, 63, 126, 252]             # trading days
-MACD_PAIRS      = [(4, 12), (8, 24), (32, 96)]         # (fast, slow)
-EWMA_VOL_SPAN   = 63
-MIN_ROWS        = 300                                   # safety floor
+DEFAULT_MACRO_COLS = ["VIX", "DXY", "T10Y2Y", "TBILL_3M", "IG_SPREAD", "HY_SPREAD"]
 
 
-# ── HuggingFace loader ────────────────────────────────────────────────────────
-
-def load_raw(hf_token: str) -> pd.DataFrame:
+def load_raw_from_dataset(dataset_name: str, hf_token: str) -> pd.DataFrame:
     """
-    Load master_data.parquet from HuggingFace.
-    Returns a DataFrame indexed by date, sorted ascending.
+    Load raw data from specified HuggingFace dataset.
+
+    NEW: Supports different input datasets for FI and Equity universes.
     """
-    ds = load_dataset(
-        "P2SAMAPA/fi-etf-macro-signal-master-data",
-        data_files="master_data.parquet",
-        split="train",
-        token=hf_token,
-    )
-    df = ds.to_pandas()
+    try:
+        local = hf_hub_download(
+            repo_id=dataset_name,
+            filename="data.parquet",
+            repo_type="dataset",
+            token=hf_token,
+        )
+        df = pd.read_parquet(local)
 
-    # Identify and set the date index
-    date_col = "__index_level_0__"
-    if date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col])
-        df = df.set_index(date_col)
-    df.index.name = "date"
-    df = df.sort_index()
+        # Ensure index is datetime
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+        elif df.index.name != 'date' and not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
 
-    # Keep all columns; filtering is done later in build_features
-    return df
+        return df.sort_index()
+    except Exception as e:
+        raise ValueError(f"Failed to load dataset {dataset_name}: {e}")
 
 
-# ── Low-level feature helpers ─────────────────────────────────────────────────
-
-def _ewma_vol(prices: pd.Series, span: int = EWMA_VOL_SPAN) -> pd.Series:
+def load_raw(hf_token: str, dataset_name: str = "P2SAMAPA/fi-etf-macro-signal-master-data") -> pd.DataFrame:
     """
-    EWMA volatility of daily returns using pandas ewm.
-    Returns annualised daily vol (not annualised — kept daily for normalisation).
+    Legacy function - loads FI dataset by default.
+    Use load_raw_from_dataset() for new code.
     """
-    rets  = prices.pct_change()
-    vol   = rets.ewm(span=span, min_periods=span // 2).std()
-    return vol.replace(0, np.nan)
+    return load_raw_from_dataset(dataset_name, hf_token)
 
 
-def _normalised_return(prices: pd.Series, h: int, vol: pd.Series) -> pd.Series:
+def dataset_summary(df: pd.DataFrame, target_etfs: List[str]) -> dict:
+    """Generate summary of loaded dataset."""
+    macro_cols = [c for c in df.columns if c in DEFAULT_MACRO_COLS]
+
+    return {
+        "rows": len(df),
+        "start_date": str(df.index[0].date()),
+        "end_date": str(df.index[-1].date()),
+        "etfs": [c for c in df.columns if c in target_etfs],
+        "macro": macro_cols,
+    }
+
+
+def build_features(df_raw: pd.DataFrame, 
+                  option: str = "A",
+                  start_year: int = 2008,
+                  end_year: Optional[int] = None,
+                  target_etfs: List[str] = None,
+                  feature_tickers: List[str] = None,
+                  macro_cols: List[str] = None) -> dict:
     """
-    Vol-normalised h-day return:  r_norm = (P_t / P_{t-h} - 1) / (sigma * sqrt(h))
+    Build feature matrix X and target arrays y.
+
+    Option A: Close-derived + macro features
+    Option B: Close-derived only
     """
-    raw = prices.pct_change(h)
-    return raw / (vol * np.sqrt(h))
-
-
-def _macd_signal(prices: pd.Series, fast: int, slow: int) -> pd.Series:
-    """
-    Double-normalised MACD signal following the paper (eqs 19-21):
-      MACD_t  = EWMA(fast) - EWMA(slow)
-      q_t     = MACD_t / Std_63(Price)
-      Signal  = q_t / Std_252(q_t)
-    """
-    lam_f   = 2.0 / (fast + 1)
-    lam_s   = 2.0 / (slow + 1)
-
-    ema_f   = prices.ewm(alpha=lam_f, adjust=False).mean()
-    ema_s   = prices.ewm(alpha=lam_s, adjust=False).mean()
-    macd    = ema_f - ema_s
-
-    std63   = prices.rolling(63, min_periods=32).std().replace(0, np.nan)
-    q       = macd / std63
-
-    std252q = q.rolling(252, min_periods=126).std().replace(0, np.nan)
-    signal  = q / std252q
-
-    return signal
-
-
-# ── Per-ticker feature builder ────────────────────────────────────────────────
-
-def _features_for_ticker(prices: pd.Series, prefix: str) -> pd.DataFrame:
-    """
-    Build all Close-derived features for a single price series.
-    Returns a DataFrame with columns prefixed by `prefix`.
-    """
-    vol    = _ewma_vol(prices)
-    cols   = {}
-
-    # Vol-normalised returns
-    for h in RETURN_HORIZONS:
-        cols[f"{prefix}_r{h}d"] = _normalised_return(prices, h, vol)
-
-    # MACD signals
-    for fast, slow in MACD_PAIRS:
-        cols[f"{prefix}_macd_{fast}_{slow}"] = _macd_signal(prices, fast, slow)
-
-    # EWMA vol level (normalised by its own rolling mean to make it stationary)
-    vol_norm = vol / vol.rolling(252, min_periods=126).mean()
-    cols[f"{prefix}_vol"] = vol_norm
-
-    # Vol-scaling factor (clipped to avoid extremes)
-    vs = (1.0 / vol).clip(upper=400)
-    cols[f"{prefix}_vsfactor"] = vs
-
-    return pd.DataFrame(cols)
-
-
-# ── Macro normaliser (macro columns are fixed across universes) ──────────────
-
-def _normalise_macro(df_raw: pd.DataFrame, macro_cols: list) -> pd.DataFrame:
-    """
-    Z-score normalise each macro column using its own expanding mean/std
-    (to avoid lookahead bias).
-    Returns a DataFrame of normalised macro columns.
-    """
-    macro = df_raw[[c for c in macro_cols if c in df_raw.columns]].copy()
-    normed = {}
-    for col in macro.columns:
-        m   = macro[col].expanding(min_periods=63).mean()
-        s   = macro[col].expanding(min_periods=63).std().replace(0, np.nan)
-        normed[col] = ((macro[col] - m) / s).clip(-5, 5)
-    return pd.DataFrame(normed, index=df_raw.index)
-
-
-# ── Target builder ────────────────────────────────────────────────────────────
-
-def _build_targets(df_raw: pd.DataFrame, target_etfs: list) -> tuple:
-    """
-    For each row t, compute next-day returns for all target ETFs.
-    Target label = index of ETF with highest next-day return (argmax).
-    Also return the raw next-day return matrix for Sharpe loss training.
-    """
-    fwd_rets = {}
-    for etf in target_etfs:
-        if etf in df_raw.columns:
-            fwd_rets[etf] = df_raw[etf].pct_change().shift(-1)   # next-day return
-
-    fwd_df     = pd.DataFrame(fwd_rets)
-    label      = fwd_df.values.argmax(axis=1).astype(np.int64)
-    label_sr   = pd.Series(label, index=df_raw.index, name="target_label")
-
-    return fwd_df, label_sr
-
-
-# ── Main feature engineering entry point ─────────────────────────────────────
-
-def build_features(
-    df_raw: pd.DataFrame,
-    option: str = "A",          # "A" = with macro, "B" = without macro
-    start_year: int = 2008,
-    end_year:   int = None,     # None = use all available data
-    target_etfs: list = None,   # NEW: dynamic target ETFs (default = FI)
-    feature_tickers: list = None, # NEW: all tickers to compute features for
-    macro_cols: list = None,    # NEW: macro columns (default = DEFAULT_MACRO_COLS)
-) -> dict:
-    """
-    Full feature engineering pipeline.
-
-    Parameters
-    ----------
-    df_raw         : raw DataFrame from load_raw()
-    option         : "A" (Close-derived + macro) or "B" (Close-derived only)
-    start_year     : first year to include in training slice
-    end_year       : last year to include (inclusive); None = latest available
-    target_etfs    : list of ETF symbols to predict (default: FI list)
-    feature_tickers: list of all tickers to compute close-derived features for
-                     (should include target_etfs + benchmarks, e.g. SPY, AGG)
-                     If None, defaults to target_etfs + DEFAULT_BENCH_COLS
-    macro_cols     : list of macro column names (default: DEFAULT_MACRO_COLS)
-
-    Returns
-    -------
-    dict with keys:
-        X              : np.ndarray [T, n_features]  float32
-        y_labels       : np.ndarray [T]              int64  (argmax ETF index)
-        y_returns      : np.ndarray [T, n_etfs]      float32 (next-day returns)
-        feature_names  : list[str]
-        dates          : pd.DatetimeIndex
-        target_etfs    : list[str]
-        n_etfs         : int
-    """
-    assert option in ("A", "B"), "option must be 'A' or 'B'"
-
-    # Backward compatibility: use default FI universe if not provided
     if target_etfs is None:
-        target_etfs = DEFAULT_TARGET_ETFS
+        target_etfs = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD"]
     if feature_tickers is None:
-        feature_tickers = target_etfs + DEFAULT_BENCH_COLS
+        feature_tickers = target_etfs + ["SPY", "AGG"]
     if macro_cols is None:
         macro_cols = DEFAULT_MACRO_COLS
 
-    # ── Slice by year ─────────────────────────────────────────────────────────
-    df = df_raw[df_raw.index.year >= start_year].copy()
-    if end_year is not None:
-        df = df[df.index.year <= end_year]
+    # Filter by date range
+    mask = df_raw.index.year >= start_year
+    if end_year:
+        mask &= df_raw.index.year <= end_year
+    df = df_raw[mask].copy()
 
-    if len(df) < MIN_ROWS:
-        raise ValueError(
-            f"Only {len(df)} rows for {start_year}–{end_year}. "
-            f"Need at least {MIN_ROWS}."
-        )
+    if len(df) < 100:
+        raise ValueError(f"Insufficient data: {len(df)} rows for range {start_year}-{end_year}")
 
-    # ── Build Close-derived features for every ticker in feature_tickers ──────
-    feature_frames = []
+    # Build features for each ticker
+    features_list = []
+    feature_names = []
+
     for ticker in feature_tickers:
-        if ticker in df.columns:
-            feature_frames.append(
-                _features_for_ticker(df[ticker], prefix=ticker)
-            )
+        close_col = f"{ticker}_close"
+        if close_col not in df.columns:
+            continue
 
-    feat_df = pd.concat(feature_frames, axis=1)
+        close = df[close_col]
 
-    # ── Optionally add macro ──────────────────────────────────────────────────
+        # Returns (vol-normalized)
+        for days in [1, 5, 21, 63, 126, 252]:
+            if len(close) > days:
+                ret = close.pct_change(days)
+                vol = close.pct_change(1).rolling(252).std() * np.sqrt(252)
+                feat = ret / vol
+                features_list.append(feat)
+                feature_names.append(f"{ticker}_ret_{days}d")
+
+        # MACD signals
+        for fast, slow in [(4, 12), (8, 24), (32, 96)]:
+            if len(close) > slow:
+                ema_fast = close.ewm(span=fast).mean()
+                ema_slow = close.ewm(span=slow).mean()
+                macd = (ema_fast - ema_slow) / close.rolling(252).std()
+                features_list.append(macd)
+                feature_names.append(f"{ticker}_macd_{fast}_{slow}")
+
+        # EWMA volatility
+        if len(close) > 63:
+            vol = close.pct_change(1).ewm(span=63).std()
+            mean_vol = close.pct_change(1).rolling(252).std()
+            feat = vol / mean_vol
+            features_list.append(feat)
+            feature_names.append(f"{ticker}_vol_63")
+
+        # Vol scaling factor
+        vol_252 = close.pct_change(1).rolling(252).std() * np.sqrt(252)
+        scale = 1.0 / vol_252
+        scale = scale.clip(upper=400)
+        features_list.append(scale)
+        feature_names.append(f"{ticker}_scale")
+
+    # Add macro features for Option A
     if option == "A":
-        macro_df = _normalise_macro(df, macro_cols)
-        feat_df  = pd.concat([feat_df, macro_df], axis=1)
+        for col in macro_cols:
+            if col in df.columns:
+                features_list.append(df[col])
+                feature_names.append(col)
 
-    # ── Build targets ─────────────────────────────────────────────────────────
-    fwd_returns, labels = _build_targets(df, target_etfs)
+    # Stack features
+    X = np.column_stack([f.values for f in features_list])
 
-    # ── Align all DataFrames on the same index ────────────────────────────────
-    combined = feat_df.join(fwd_returns, how="inner").join(labels, how="inner")
-    combined = combined.dropna(subset=[labels.name])   # drop rows with no label
+    # Build targets (next-day returns for each target ETF)
+    y_returns = []
+    for etf in target_etfs:
+        close_col = f"{etf}_close"
+        if close_col not in df.columns:
+            raise ValueError(f"Target ETF {etf} not found in dataset")
 
-    # Drop warmup rows where features are still NaN
-    # (longest warmup = 252-day rolling std in MACD double-normalisation)
-    combined = combined.dropna(thresh=int(len(combined.columns) * 0.85))
+        next_ret = df[close_col].pct_change(1).shift(-1)
+        y_returns.append(next_ret.values)
 
-    feature_names = [c for c in combined.columns
-                     if c not in list(fwd_returns.columns) + [labels.name]]
-    ret_cols      = list(fwd_returns.columns)
+    y_returns = np.column_stack(y_returns)
 
-    X        = combined[feature_names].values.astype(np.float32)
-    y_labels = combined[labels.name].values.astype(np.int64)
-    y_returns= combined[ret_cols].values.astype(np.float32)
+    # Labels: which ETF has best next-day return
+    y_labels = np.argmax(y_returns, axis=1)
 
-    # Final NaN imputation (column mean) — safety net
-    for j in range(X.shape[1]):
-        mask = np.isnan(X[:, j])
-        if mask.any():
-            col_mean = np.nanmean(X[:, j])
-            X[mask, j] = col_mean if not np.isnan(col_mean) else 0.0
-
-    # Clip extreme values to [-10, 10] (paper clips vol-scaled returns)
-    X = np.clip(X, -10.0, 10.0)
+    # Remove rows with NaN
+    valid_mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y_returns).any(axis=1)
+    X = X[valid_mask]
+    y_labels = y_labels[valid_mask]
+    y_returns = y_returns[valid_mask]
+    dates = df.index[valid_mask]
 
     return {
-        "X":             X,
-        "y_labels":      y_labels,
-        "y_returns":     y_returns,
+        "X": X,
+        "y_labels": y_labels,
+        "y_returns": y_returns,
+        "dates": dates,
         "feature_names": feature_names,
-        "dates":         combined.index,
-        "target_etfs":   target_etfs,
-        "n_etfs":        len(target_etfs),
     }
 
 
-# ── Window generators (unchanged, they are independent of ETF lists) ─────────
-
-def expanding_windows(
-    first_train_end: int = 2011,
-    data_end_year:   int = None,
-    df_raw:          pd.DataFrame = None,
-    step:            int = 3,
-) -> list:
-    """
-    Generates expanding window configs in step-year increments.
-    """
-    if data_end_year is None:
-        data_end_year = df_raw.index.year.max()
-
-    ends = list(range(first_train_end, data_end_year, step))
-    if data_end_year not in ends:
-        ends.append(data_end_year)
-
+def expanding_windows(first_train_end: int = 2011, 
+                     data_end_year: int = 2025,
+                     df_raw: pd.DataFrame = None,
+                     step: int = 3) -> List[dict]:
+    """Generate expanding window configurations."""
     windows = []
-    for end in ends:
+    for end_year in range(first_train_end, data_end_year + 1, step):
         windows.append({
             "start_year": 2008,
-            "end_year":   end,
-            "label":      f"2008→{end}",
-            "stream":     "expanding",
+            "end_year": end_year,
+            "label": f"2008→{end_year}",
+            "stream": "expanding",
         })
     return windows
 
 
-def shrinking_windows(
-    data_end_year: int = None,
-    df_raw:        pd.DataFrame = None,
-    step:          int = 3,
-) -> list:
-    """
-    Generates shrinking window configs in step-year increments.
-    """
-    if data_end_year is None:
-        data_end_year = df_raw.index.year.max()
-
-    starts = list(range(2008, data_end_year, step))
-    if (data_end_year - 1) not in starts:
-        starts.append(data_end_year - 1)
-
+def shrinking_windows(data_end_year: int = 2025,
+                     df_raw: pd.DataFrame = None,
+                     step: int = 3) -> List[dict]:
+    """Generate shrinking window configurations."""
     windows = []
-    for start in starts:
+    for start_year in range(2008, data_end_year, step):
         windows.append({
-            "start_year": start,
-            "end_year":   data_end_year,
-            "label":      f"{start}→{data_end_year}",
-            "stream":     "shrinking",
+            "start_year": start_year,
+            "end_year": data_end_year,
+            "label": f"{start_year}→{data_end_year}",
+            "stream": "shrinking",
         })
     return windows
 
 
-def all_windows(df_raw: pd.DataFrame, step: int = 3) -> list:
-    """Returns all expanding + shrinking windows at given step size."""
-    data_end = df_raw.index.year.max()
-    exp = expanding_windows(first_train_end=2011, data_end_year=data_end,
-                            df_raw=df_raw, step=step)
-    shr = shrinking_windows(data_end_year=data_end, df_raw=df_raw, step=step)
-    return exp + shr
+def all_windows(df_raw: pd.DataFrame, step: int = 3) -> Tuple[List[dict], List[dict]]:
+    """Generate both expanding and shrinking windows."""
+    data_end_year = df_raw.index.year.max()
+    exp = expanding_windows(data_end_year=data_end_year, df_raw=df_raw, step=step)
+    shr = shrinking_windows(data_end_year=data_end_year, df_raw=df_raw, step=step)
+    return exp, shr
 
 
-# ── Train/val/test split (unchanged) ─────────────────────────────────────────
-
-def chronological_split(
-    X: np.ndarray,
-    y_labels: np.ndarray,
-    y_returns: np.ndarray,
-    dates: pd.DatetimeIndex,
-    train_pct: float = 0.70,
-    val_pct:   float = 0.15,
-) -> dict:
-    """
-    Strict chronological split — no shuffling.
-    """
-    n        = len(X)
-    t_end    = int(n * train_pct)
-    v_end    = int(n * (train_pct + val_pct))
+def chronological_split(X, y_labels, y_returns, train_pct=0.7, val_pct=0.15):
+    """Split data chronologically."""
+    n = len(X)
+    train_end = int(n * train_pct)
+    val_end = int(n * (train_pct + val_pct))
 
     return {
-        "X_train":    X[:t_end],
-        "X_val":      X[t_end:v_end],
-        "X_test":     X[v_end:],
-        "y_train_l":  y_labels[:t_end],
-        "y_val_l":    y_labels[t_end:v_end],
-        "y_test_l":   y_labels[v_end:],
-        "y_train_r":  y_returns[:t_end],
-        "y_val_r":    y_returns[t_end:v_end],
-        "y_test_r":   y_returns[v_end:],
-        "dates_train": dates[:t_end],
-        "dates_val":   dates[t_end:v_end],
-        "dates_test":  dates[v_end:],
-    }
-
-
-# ── Dataset summary (updated to accept target_etfs) ──────────────────────────
-
-def dataset_summary(df_raw: pd.DataFrame, target_etfs: list = None) -> dict:
-    """
-    Returns summary of available columns in the raw data.
-    If target_etfs is not provided, uses DEFAULT_TARGET_ETFS.
-    """
-    if target_etfs is None:
-        target_etfs = DEFAULT_TARGET_ETFS
-    return {
-        "rows":       len(df_raw),
-        "start_date": str(df_raw.index[0].date()),
-        "end_date":   str(df_raw.index[-1].date()),
-        "etfs":       [c for c in target_etfs if c in df_raw.columns],
-        "macro":      [c for c in DEFAULT_MACRO_COLS if c in df_raw.columns],
-        "benchmarks": [c for c in DEFAULT_BENCH_COLS if c in df_raw.columns],
+        "X_train": X[:train_end],
+        "X_val": X[train_end:val_end],
+        "X_test": X[val_end:],
+        "y_train_labels": y_labels[:train_end],
+        "y_val_labels": y_labels[train_end:val_end],
+        "y_test_labels": y_labels[val_end:],
+        "y_train_returns": y_returns[:train_end],
+        "y_val_returns": y_returns[train_end:val_end],
+        "y_test_returns": y_returns[val_end:],
     }
