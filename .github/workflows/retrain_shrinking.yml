@@ -42,8 +42,20 @@ jobs:
           cache: 'pip'
       - run: pip install -r requirements.txt
 
+      # FIX: always initialise SKIP=false so the training step condition is
+      # never undefined. Without this, on scheduled runs where the date-check
+      # step is skipped entirely, env.SKIP is empty — not 'false' — and
+      # `env.SKIP != 'true'` can behave unexpectedly across runner versions.
+      - name: Set SKIP default
+        run: echo "SKIP=false" >> $GITHUB_ENV
+
+      # FIX: only run the date-check on manual dispatch, never on schedule.
+      # On schedule we always want to train. Previously the condition only
+      # checked force/benchmark inputs, which are empty strings on schedule —
+      # so the step ran and could set SKIP=true if today's date was already
+      # in the HF file, blocking the upload silently.
       - name: Check if already ran today (FI)
-        if: ${{ github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -90,8 +102,11 @@ jobs:
           cache: 'pip'
       - run: pip install -r requirements.txt
 
+      - name: Set SKIP default
+        run: echo "SKIP=false" >> $GITHUB_ENV
+
       - name: Check if already ran today (Equity)
-        if: ${{ github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force != 'true' && github.event.inputs.benchmark != 'true' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
