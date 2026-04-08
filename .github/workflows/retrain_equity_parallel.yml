@@ -32,13 +32,16 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
       - name: Train Equity
-        if: ${{ !inputs.benchmark }}
+        if: inputs.benchmark == false
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python train.py --universe equity --stream ${{ matrix.stream }} --epochs ${{ inputs.epochs || 80 }}
+          STREAM: ${{ matrix.stream }}
+          EPOCHS: ${{ inputs.epochs || 80 }}
+        run: python train.py --universe equity --stream $STREAM --epochs $EPOCHS
       - name: Benchmark Equity
-        if: ${{ inputs.benchmark }}
+        if: inputs.benchmark == true
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python train.py --universe equity --stream ${{ matrix.stream }} --benchmark --epochs ${{ inputs.epochs || 80 }}
-n.py --universe equity --stream ${{ matrix.stream }} --benchmark --epochs ${{ inputs.epochs || 80 }}
+          STREAM: ${{ matrix.stream }}
+          EPOCHS: ${{ inputs.epochs || 80 }}
+        run: python train.py --universe equity --stream $STREAM --benchmark --epochs $EPOCHS
