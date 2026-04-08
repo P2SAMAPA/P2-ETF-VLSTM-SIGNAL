@@ -1,0 +1,42 @@
+name: Equity Parallel Training
+
+on:
+  schedule:
+    - cron: '0 22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: 'Benchmark only'
+        type: boolean
+        default: false
+      epochs:
+        description: 'Max epochs'
+        type: number
+        default: 80
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        stream: [expanding, shrinking]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install -r requirements.txt
+      - name: Train
+        if: inputs.benchmark == false
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STREAM: ${{ matrix.stream }}
+        run: python train.py --universe equity --stream $STREAM --epochs ${{ inputs.epochs || 80 }}
+      - name: Benchmark
+        if: inputs.benchmark == true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STREAM: ${{ matrix.stream }}
+        run: python train.py --universe equity --stream $STREAM --benchmark --epochs ${{ inputs.epochs || 80 }}
