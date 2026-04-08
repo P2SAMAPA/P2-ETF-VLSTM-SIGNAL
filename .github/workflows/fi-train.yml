@@ -1,4 +1,4 @@
-name: FI Parallel Training
+name: FI Train
 
 on:
   schedule:
@@ -6,11 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       benchmark:
-        description: 'Benchmark only'
         type: boolean
         default: false
       epochs:
-        description: 'Max epochs'
         type: number
         default: 80
 
@@ -28,15 +26,19 @@ jobs:
         with:
           python-version: '3.10'
       - run: pip install -r requirements.txt
-      - name: Train
-        if: inputs.benchmark == false
+      - name: Train FI
+        if: github.event.inputs.benchmark != 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          STREAM: ${{ matrix.stream }}
-        run: python train.py --universe fi --stream $STREAM --epochs ${{ inputs.epochs || 80 }}
-      - name: Benchmark
-        if: inputs.benchmark == true
+        run: |
+          export STREAM=${{ matrix.stream }}
+          export EPOCHS=${{ github.event.inputs.epochs || '80' }}
+          python train.py --universe fi --stream $STREAM --epochs $EPOCHS
+      - name: Benchmark FI
+        if: github.event.inputs.benchmark == 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          STREAM: ${{ matrix.stream }}
-        run: python train.py --universe fi --stream $STREAM --benchmark --epochs ${{ inputs.epochs || 80 }}
+        run: |
+          export STREAM=${{ matrix.stream }}
+          export EPOCHS=${{ github.event.inputs.epochs || '80' }}
+          python train.py --universe fi --stream $STREAM --benchmark --epochs $EPOCHS
