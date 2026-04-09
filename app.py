@@ -514,8 +514,8 @@ def render_stream(stream_data: dict, stream_name: str, data_through: str, target
         st.info("No window results available.")
         return
 
-    valid_ret  = [w.get("ann_return", 0) for w in windows if w.get("ann_return") is not None]
-    valid_sh   = [w.get("sharpe",     0) for w in windows if w.get("sharpe")     is not None]
+    valid_ret = [w.get("backtest_ann_return", 0) for w in windows if w.get("backtest_ann_return") is not None]
+    valid_sh = [w.get("backtest_sharpe", 0) for w in windows if w.get("backtest_sharpe") is not None]
     live_sigs  = [
         w.get("live_signal", {}).get("signal")
         for w in windows if w.get("live_signal")
