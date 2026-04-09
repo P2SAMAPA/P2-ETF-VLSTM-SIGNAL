@@ -52,7 +52,7 @@ def generate_live_signal(model, X_full, scale_mean, scale_std, lookback, target_
     from vlstm import predict
     
     if X_full is None or len(X_full) < lookback:
-        return {"signal": "N/A", "probabilities": {}, "confidence": 0}
+        return {"signal": "N/A", "probabilities": {}, "confidence": 0, "top_features": []}
     
     X_recent = X_full[-lookback:]
     X_scaled = (X_recent - scale_mean) / scale_std
@@ -76,8 +76,20 @@ def generate_live_signal(model, X_full, scale_mean, scale_std, lookback, target_
 def summarise_window_result(window, train_res, backtest, live_signal, lookback, option):
     """
     Summarise all results for one window into a dict.
-    FIXED: live_signal is now stored as a dict (not just the signal string)
+    CRITICAL: Always store live_signal as a proper dict.
     """
+    # CRITICAL FIX: Force live_signal to be a dict
+    if isinstance(live_signal, dict):
+        live_signal_dict = live_signal
+    else:
+        # If it's a string or something else, convert to dict
+        live_signal_dict = {
+            "signal": str(live_signal) if live_signal else "N/A",
+            "confidence": 0,
+            "probabilities": {},
+            "top_features": []
+        }
+    
     return {
         "window_label": window["label"],
         "window_start": window["start_year"],
@@ -93,8 +105,8 @@ def summarise_window_result(window, train_res, backtest, live_signal, lookback, 
         "backtest_sharpe": backtest.get("sharpe", 0),
         "backtest_max_dd": backtest.get("max_dd", 0),
         "backtest_hit_rate": backtest.get("hit_rate", 0),
-        # FIXED: Store live_signal as a dict, not just a string
-        "live_signal": live_signal if isinstance(live_signal, dict) else {"signal": live_signal, "confidence": 0, "probabilities": {}},
+        # CRITICAL: Always a dict
+        "live_signal": live_signal_dict,
     }
 
 
@@ -112,12 +124,11 @@ def stream_consensus(results: List[Dict], target_etfs: List[str]) -> Dict[str, A
     
     votes = {etf: 0 for etf in target_etfs}
     for r in results:
-        # Handle both dict and string formats for backward compatibility
         live = r.get("live_signal", {})
         if isinstance(live, dict):
             signal = live.get("signal", "N/A")
         else:
-            signal = live  # It's a string
+            signal = str(live) if live else "N/A"
         if signal in votes:
             votes[signal] += 1
     
