@@ -15,7 +15,7 @@ on:
 jobs:
   train:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 350
     strategy:
       matrix:
         stream: [expanding, shrinking]
