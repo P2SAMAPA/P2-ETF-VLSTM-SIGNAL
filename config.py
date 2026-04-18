@@ -9,7 +9,7 @@ FI_FEATURE_TICKERS = ["TLT", "VNQ", "SLV", "GLD", "HYG", "LQD", "SPY", "AGG"]
 
 # Equity Universe (Sectors + Gold Miners) - Your 10 ETFs
 EQUITY_ETFS = ["GDX", "XLV", "XLY", "XLK", "XLE", "XLP", "XLU", "XME", "XLF", "XLI"]
-EQUITY_FEATURE_TICKERS = ["GDX", "XLV", "XLY", "XLK", "XLE", "XLP", "XLU", "XME", "XLF", "XLI", "SPY", "QQQ"]
+EQUITY_FEATURE_TICKERS = ["GDX", "XLV", "XLY", "XLK", "XLE", "XLP", "XLU", "XME", "XLF", "IWF", "IWM", "XSD", "XBI", "XLI", "SPY", "QQQ"]
 
 UNIVERSES = {
     "fi": {
