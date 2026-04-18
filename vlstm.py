@@ -6,27 +6,34 @@ VSN + LSTM architecture following Saly-Kaufmann et al. (Oxford, 2026).
 Adapted for ETF classification (next-day best ETF selection).
 
 Architecture:
-  Input [batch, lookback, n_features]
+    Input [batch, lookback, n_features]
     → VSN: per-timestep dynamic feature gating
     → LSTM: 2-layer recurrent encoder
     → Linear projection head → softmax → ETF probabilities
 
 Two loss modes:
-  "ce"     : cross-entropy on argmax ETF label
-  "sharpe" : end-to-end Sharpe ratio optimisation on portfolio returns
-             (model output = position weights, loss = -annualised Sharpe)
+    "ce"     : cross-entropy on argmax ETF label
+    "sharpe" : end-to-end Sharpe ratio optimisation on portfolio returns
+               (model output = position weights, loss = -annualised Sharpe)
 
 Validation always uses Sharpe ratio to pick the winner between the two modes.
+
+FIX (2026-04-18):
+    build_sequences now raises a clear ValueError if the window is too short
+    to form any sequences, instead of crashing with a confusing numpy error
+    ("need at least one array to stack"). This happens for early expanding
+    windows (e.g. 2008→2011) where rolling(252) NaN warmup consumes most
+    of the available rows.
 """
 
 import math
 import time
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-
 
 # ── Reproducibility ───────────────────────────────────────────────────────────
 
@@ -36,8 +43,7 @@ def set_seed(seed: int = 42):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark     = False
-
+    torch.backends.cudnn.benchmark = False
 
 # ── Variable Selection Network ────────────────────────────────────────────────
 
@@ -47,9 +53,9 @@ class VSN(nn.Module):
     Applies per-feature nonlinear embedding then dynamic soft gating.
 
     At each timestep t:
-      1. Each feature i → independent Linear → ELU embedding h_{t,i}
-      2. All embeddings concatenated → gating network → softmax weights α_t
-      3. Output = weighted sum of embeddings
+        1. Each feature i → independent Linear → ELU embedding h_{t,i}
+        2. All embeddings concatenated → gating network → softmax weights α_t
+        3. Output = weighted sum of embeddings
 
     Input:  [batch, seq_len, n_features]
     Output: [batch, seq_len, hidden_dim]
@@ -94,16 +100,14 @@ class VSN(nn.Module):
 
         # Gating: flatten embeddings → [B, T, n_features * hidden_dim]
         flat = stacked.reshape(B, T, -1)
-        weights = F.softmax(self.gate(flat), dim=-1)          # [B, T, n_features]
+        weights = F.softmax(self.gate(flat), dim=-1)   # [B, T, n_features]
 
         # Weighted sum of embeddings
         # weights: [B, T, n_features, 1] × stacked: [B, T, n_features, hidden_dim]
-        weights_exp = weights.unsqueeze(-1)                    # [B, T, C, 1]
-        out = (weights_exp * stacked).sum(dim=2)               # [B, T, hidden_dim]
+        weights_exp = weights.unsqueeze(-1)             # [B, T, C, 1]
+        out = (weights_exp * stacked).sum(dim=2)        # [B, T, hidden_dim]
         out = self.dropout(out)
-
         return out, weights
-
 
 # ── VLSTM Model ───────────────────────────────────────────────────────────────
 
@@ -112,26 +116,26 @@ class VLSTM(nn.Module):
     VSN + LSTM classifier for next-day ETF selection.
 
     Forward pass returns:
-      logits   : [batch, n_etfs]   raw scores (before softmax)
-      attn     : [batch, seq_len, n_features]  VSN attention weights
+        logits : [batch, n_etfs]                     raw scores (before softmax)
+        attn   : [batch, seq_len, n_features]        VSN attention weights
     """
 
     def __init__(
         self,
-        n_features:  int,
-        n_etfs:      int,
-        hidden_dim:  int   = 128,
-        lstm_layers: int   = 2,
-        dropout:     float = 0.3,
+        n_features: int,
+        n_etfs: int,
+        hidden_dim: int  = 128,
+        lstm_layers: int = 2,
+        dropout: float   = 0.3,
     ):
         super().__init__()
         self.vsn  = VSN(n_features, hidden_dim, dropout=dropout)
         self.lstm = nn.LSTM(
-            input_size   = hidden_dim,
-            hidden_size  = hidden_dim,
-            num_layers   = lstm_layers,
-            batch_first  = True,
-            dropout      = dropout if lstm_layers > 1 else 0.0,
+            input_size  = hidden_dim,
+            hidden_size = hidden_dim,
+            num_layers  = lstm_layers,
+            batch_first = True,
+            dropout     = dropout if lstm_layers > 1 else 0.0,
         )
         self.head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
@@ -140,61 +144,70 @@ class VLSTM(nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        vsn_out, attn = self.vsn(x)                   # [B, T, hidden], [B, T, C]
-        lstm_out, _   = self.lstm(vsn_out)            # [B, T, hidden]
-        h_T           = lstm_out[:, -1, :]            # [B, hidden]  final state
-        logits        = self.head(h_T)                # [B, n_etfs]
+        vsn_out, attn = self.vsn(x)          # [B, T, hidden], [B, T, C]
+        lstm_out, _   = self.lstm(vsn_out)   # [B, T, hidden]
+        h_T           = lstm_out[:, -1, :]   # [B, hidden] final state
+        logits        = self.head(h_T)       # [B, n_etfs]
         return logits, attn
-
 
 # ── Sharpe ratio loss ─────────────────────────────────────────────────────────
 
 def sharpe_loss(
-    logits:    torch.Tensor,    # [B, n_etfs]
-    y_returns: torch.Tensor,    # [B, n_etfs]  next-day raw returns
-    eps:       float = 1e-6,
+    logits:    torch.Tensor,   # [B, n_etfs]
+    y_returns: torch.Tensor,   # [B, n_etfs] next-day raw returns
+    eps: float = 1e-6,
 ) -> torch.Tensor:
     """
     End-to-end differentiable Sharpe ratio loss.
     Position weights = softmax(logits) — long-only, sum to 1.
-    Portfolio return = sum(weights * next_day_returns).
-    Loss = -annualised Sharpe ratio over the batch.
+    Portfolio return  = sum(weights * next_day_returns).
+    Loss              = -annualised Sharpe ratio over the batch.
     """
-    weights    = F.softmax(logits, dim=-1)             # [B, n_etfs]
-    port_ret   = (weights * y_returns).sum(dim=-1)     # [B]
-
-    mean_ret   = port_ret.mean()
-    std_ret    = port_ret.std() + eps
-    sharpe     = mean_ret / std_ret * math.sqrt(252)
-
+    weights  = F.softmax(logits, dim=-1)          # [B, n_etfs]
+    port_ret = (weights * y_returns).sum(dim=-1)  # [B]
+    mean_ret = port_ret.mean()
+    std_ret  = port_ret.std() + eps
+    sharpe   = mean_ret / std_ret * math.sqrt(252)
     return -sharpe
-
 
 # ── Sequence builder ──────────────────────────────────────────────────────────
 
 def build_sequences(
-    X:        np.ndarray,
-    y_labels: np.ndarray,
-    y_returns:np.ndarray,
-    lookback: int,
+    X:         np.ndarray,
+    y_labels:  np.ndarray,
+    y_returns: np.ndarray,
+    lookback:  int,
 ) -> tuple:
     """
     Build overlapping sequences of length `lookback`.
     Returns arrays indexed from lookback onwards.
 
-    X_seq[i]   = X[i : i+lookback]          features over window
-    y_lab[i]   = y_labels[i+lookback]       label at end of window
-    y_ret[i]   = y_returns[i+lookback]      returns at end of window
+        X_seq[i] = X[i : i+lookback]   features over window
+        y_lab[i] = y_labels[i+lookback] label at end of window
+        y_ret[i] = y_returns[i+lookback] returns at end of window
+
+    FIX: raises a clear ValueError if the window has fewer rows than
+    `lookback`, instead of letting numpy.stack crash with an opaque message.
+    This happens for short expanding windows (e.g. 2008→2011) where
+    rolling(252) warmup consumes most of the available data after NaN removal.
+    The caller (train_one_window) wraps this in try/except and skips the
+    window gracefully.
     """
-    n      = len(X)
-    n_seq  = n - lookback
+    n     = len(X)
+    n_seq = n - lookback
 
-    X_seq  = np.stack([X[i:i+lookback] for i in range(n_seq)], axis=0)
-    y_lab  = y_labels[lookback:]
-    y_ret  = y_returns[lookback:]
+    if n_seq <= 0:
+        raise ValueError(
+            f"build_sequences: cannot form sequences — "
+            f"n_rows={n} ≤ lookback={lookback}. "
+            f"Window is too short after NaN removal from rolling features. "
+            f"Skipping this window."
+        )
 
+    X_seq = np.stack([X[i:i+lookback] for i in range(n_seq)], axis=0)
+    y_lab = y_labels[lookback:]
+    y_ret = y_returns[lookback:]
     return X_seq, y_lab, y_ret
-
 
 # ── Feature scaler ────────────────────────────────────────────────────────────
 
@@ -208,8 +221,7 @@ def scale_features(
     Returns scaled arrays + (mean, std) for inference.
     """
     mean = X_train.mean(axis=(0, 1), keepdims=True)
-    std  = X_train.std(axis=(0, 1), keepdims=True) + 1e-8
-
+    std  = X_train.std( axis=(0, 1), keepdims=True) + 1e-8
     return (
         (X_train - mean) / std,
         (X_val   - mean) / std,
@@ -217,28 +229,27 @@ def scale_features(
         mean, std,
     )
 
-
 def scale_single(X: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
     """Scale a single sample using pre-fitted mean/std."""
     return (X - mean) / std
 
-
 # ── Lookback auto-selector ────────────────────────────────────────────────────
 
 def find_best_lookback(
-    X:         np.ndarray,
-    y_labels:  np.ndarray,
-    y_returns: np.ndarray,
-    train_pct: float,
-    val_pct:   float,
-    n_etfs:    int,
-    n_features:int,
-    candidates: list = [30, 45, 60],
-    epochs:    int   = 20,          # quick search — fewer epochs
+    X:          np.ndarray,
+    y_labels:   np.ndarray,
+    y_returns:  np.ndarray,
+    train_pct:  float,
+    val_pct:    float,
+    n_etfs:     int,
+    n_features: int,
+    candidates: list  = [30, 45, 60],
+    epochs:     int   = 20,
 ) -> int:
     """
     Train a small VLSTM for a few epochs with each candidate lookback.
     Returns the lookback with best validation Sharpe.
+    Falls back to smallest candidate if all fail.
     """
     set_seed(42)
     device = torch.device("cpu")
@@ -247,9 +258,9 @@ def find_best_lookback(
     for lb in candidates:
         try:
             X_seq, y_lab, y_ret = build_sequences(X, y_labels, y_returns, lb)
-            n      = len(X_seq)
-            t_end  = int(n * train_pct)
-            v_end  = int(n * (train_pct + val_pct))
+            n     = len(X_seq)
+            t_end = int(n * train_pct)
+            v_end = int(n * (train_pct + val_pct))
 
             if t_end < 50 or (v_end - t_end) < 20:
                 continue
@@ -263,7 +274,7 @@ def find_best_lookback(
             model = VLSTM(n_features, n_etfs, hidden_dim=64, lstm_layers=1).to(device)
             opt   = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-            ds    = TensorDataset(
+            ds     = TensorDataset(
                 torch.tensor(Xtr_s, dtype=torch.float32),
                 torch.tensor(ltr,   dtype=torch.long),
                 torch.tensor(rtr,   dtype=torch.float32),
@@ -283,9 +294,9 @@ def find_best_lookback(
                 xv     = torch.tensor(Xva_s, dtype=torch.float32)
                 rv     = torch.tensor(rva,   dtype=torch.float32)
                 logits, _ = model(xv)
-                w      = F.softmax(logits, dim=-1)
-                pr     = (w * rv).sum(dim=-1).numpy()
-                sh     = pr.mean() / (pr.std() + 1e-8) * math.sqrt(252)
+                w  = F.softmax(logits, dim=-1)
+                pr = (w * rv).sum(dim=-1).numpy()
+                sh = pr.mean() / (pr.std() + 1e-8) * math.sqrt(252)
 
             if sh > best_sharpe:
                 best_sharpe = sh
@@ -296,45 +307,43 @@ def find_best_lookback(
 
     return best_lb
 
-
 # ── Core trainer ──────────────────────────────────────────────────────────────
 
 def train_vlstm(
-    X_train:   np.ndarray,       # [T_train, lookback, n_features]
-    y_train_l: np.ndarray,       # [T_train]  labels
-    y_train_r: np.ndarray,       # [T_train, n_etfs] returns
-    X_val:     np.ndarray,
-    y_val_l:   np.ndarray,
-    y_val_r:   np.ndarray,
-    n_etfs:    int,
-    loss_mode: str   = "ce",     # "ce" or "sharpe"
-    hidden_dim:int   = 128,
-    lstm_layers:int  = 2,
-    dropout:   float = 0.3,
-    lr:        float = 5e-4,
-    epochs:    int   = 80,
-    batch_size:int   = 64,
-    patience:  int   = 15,
-    seed:      int   = 42,
+    X_train:    np.ndarray,   # [T_train, lookback, n_features]
+    y_train_l:  np.ndarray,   # [T_train] labels
+    y_train_r:  np.ndarray,   # [T_train, n_etfs] returns
+    X_val:      np.ndarray,
+    y_val_l:    np.ndarray,
+    y_val_r:    np.ndarray,
+    n_etfs:     int,
+    loss_mode:  str   = "ce",
+    hidden_dim: int   = 128,
+    lstm_layers:int   = 2,
+    dropout:    float = 0.3,
+    lr:         float = 5e-4,
+    epochs:     int   = 80,
+    batch_size: int   = 64,
+    patience:   int   = 15,
+    seed:       int   = 42,
 ) -> dict:
     """
     Train a VLSTM model.
 
     Returns dict with:
-        model        : trained VLSTM (in eval mode)
-        val_sharpe   : validation Sharpe ratio
-        val_ce       : validation cross-entropy loss
-        scale_mean   : feature mean for inference scaling
-        scale_std    : feature std  for inference scaling
-        train_time_s : wall-clock training time in seconds
-        loss_mode    : which loss was used
+        model         : trained VLSTM (in eval mode)
+        val_sharpe    : validation Sharpe ratio
+        val_ce        : validation cross-entropy loss
+        scale_mean    : feature mean for inference scaling
+        scale_std     : feature std for inference scaling
+        train_time_s  : wall-clock training time in seconds
+        loss_mode     : which loss was used
     """
     set_seed(seed)
-    device     = torch.device("cpu")
-    t_start    = time.time()
+    device  = torch.device("cpu")
+    t_start = time.time()
 
     n_features = X_train.shape[2]
-
     model      = VLSTM(n_features, n_etfs, hidden_dim, lstm_layers, dropout).to(device)
     optimiser  = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler  = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -355,10 +364,10 @@ def train_vlstm(
     y_val_r_t = torch.tensor(y_val_r, dtype=torch.float32).to(device)
 
     # ── Training loop ─────────────────────────────────────────────────────────
-    best_val_loss  = float("inf")
-    best_state     = None
-    no_improve     = 0
-    history        = []
+    best_val_loss = float("inf")
+    best_state    = None
+    no_improve    = 0
+    history       = []
 
     for epoch in range(epochs):
         model.train()
@@ -388,7 +397,6 @@ def train_vlstm(
         model.eval()
         with torch.no_grad():
             val_logits, _ = model(X_val_t)
-
             if loss_mode == "ce":
                 val_loss = F.cross_entropy(val_logits, y_val_l_t).item()
             else:
@@ -403,8 +411,9 @@ def train_vlstm(
             no_improve    = 0
         else:
             no_improve += 1
-            if no_improve >= patience:
-                break
+
+        if no_improve >= patience:
+            break
 
     # ── Load best checkpoint ──────────────────────────────────────────────────
     if best_state is not None:
@@ -423,44 +432,43 @@ def train_vlstm(
     train_time = time.time() - t_start
 
     return {
-        "model":         model,
-        "val_sharpe":    float(val_sharpe),
-        "val_ce":        float(val_ce),
-        "best_val_loss": float(best_val_loss),
-        "train_time_s":  float(train_time),
-        "loss_mode":     loss_mode,
-        "history":       history,
-        "epochs_run":    len(history),
+        "model":          model,
+        "val_sharpe":     float(val_sharpe),
+        "val_ce":         float(val_ce),
+        "best_val_loss":  float(best_val_loss),
+        "train_time_s":   float(train_time),
+        "loss_mode":      loss_mode,
+        "history":        history,
+        "epochs_run":     len(history),
     }
-
 
 # ── Inference ─────────────────────────────────────────────────────────────────
 
 def predict(
-    model:     VLSTM,
-    X:         np.ndarray,         # [T, lookback, n_features] already scaled
-    batch_size:int = 256,
+    model:      VLSTM,
+    X:          np.ndarray,   # [T, lookback, n_features] already scaled
+    batch_size: int = 256,
 ) -> tuple:
     """
     Run inference on scaled sequences.
 
     Returns:
-        preds  : np.ndarray [T]        argmax ETF index
-        proba  : np.ndarray [T, n_etfs] softmax probabilities
-        attn   : np.ndarray [T, lookback, n_features] VSN weights
+        preds : np.ndarray [T]                  argmax ETF index
+        proba : np.ndarray [T, n_etfs]          softmax probabilities
+        attn  : np.ndarray [T, lookback, n_features]  VSN weights
     """
     device = next(model.parameters()).device
     model.eval()
-
     all_preds, all_proba, all_attn = [], [], []
+
     ds     = TensorDataset(torch.tensor(X, dtype=torch.float32))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False)
 
     with torch.no_grad():
         for (xb,) in loader:
-            xb         = xb.to(device)
+            xb       = xb.to(device)
             logits, at = model(xb)
-            prob       = F.softmax(logits, dim=-1)
+            prob     = F.softmax(logits, dim=-1)
             all_preds.append(prob.argmax(dim=-1).cpu().numpy())
             all_proba.append(prob.cpu().numpy())
             all_attn.append(at.cpu().numpy())
@@ -471,11 +479,10 @@ def predict(
         np.concatenate(all_attn,  axis=0),
     )
 
-
 # ── VSN attention summary ─────────────────────────────────────────────────────
 
 def top_vsn_features(
-    attn:          np.ndarray,     # [T, lookback, n_features]
+    attn:          np.ndarray,   # [T, lookback, n_features]
     feature_names: list,
     top_k:         int = 5,
 ) -> list:
@@ -483,7 +490,7 @@ def top_vsn_features(
     Average VSN attention weights over time and lookback.
     Returns top-k feature names with their mean attention weight.
     """
-    mean_attn = attn.mean(axis=(0, 1))                 # [n_features]
+    mean_attn = attn.mean(axis=(0, 1))    # [n_features]
     idx       = np.argsort(mean_attn)[::-1][:top_k]
     return [
         {"feature": feature_names[i], "weight": float(mean_attn[i])}
