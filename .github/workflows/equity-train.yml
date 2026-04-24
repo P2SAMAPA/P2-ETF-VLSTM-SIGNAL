@@ -2,7 +2,7 @@ name: Equity Train
 
 on:
   schedule:
-    - cron: '0 22 * * 1-5'
+    - cron: '0 23 * * 1-5'
   workflow_dispatch:
     inputs:
       benchmark:
